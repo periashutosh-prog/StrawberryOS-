@@ -57,18 +57,6 @@ This is not a commercial product. It is a platform built so that hobbyists, engi
 
 ---
 
-## 🏗️ Architecture
-
-```
-StrawberryOS (Universal Core)
-├── WiFi stack
-├── BLE stack
-├── ESP-NOW stack
-├── Power management
-└── App layer (device specific)
-    └── Smartwatch (current reference implementation)
-```
-
 StrawberryOS is designed to be portable. The core is hardware-agnostic. Developers can build their own app layer for their own target device.
 
 ---
