@@ -94,7 +94,7 @@ StrawberryOS is designed to be portable. The core is hardware-agnostic. Develope
 
 ```
 StrawberryOS/
-├── Smartwatch.ino        # Main OS source
+├── StrawberryOS.ino        # Main OS source
 ├── README.md
 └── PCB/                  # EasyEDA files (coming soon)
 ```
