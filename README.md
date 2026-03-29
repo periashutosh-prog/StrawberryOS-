@@ -1,124 +1,104 @@
 # StrawberryOS
 
-
-An open-source embedded operating system built on ESP32, designed to be hackable, extensible, and free for everyone. Orginally, it's designed for a smartwatch but with some modifications it can be used for almost any device.
-
----
-
-## 🍓 What is StrawberryOS?
-
-StrawberryOS is a full embedded OS built from scratch for the Seeed XIAO ESP32-C6, currently targeting smartwatch hardware. It is part of the broader **Strawberry ecosystem** — an open-source platform for embedded devices.
-
-This is not a commercial product. It is a platform built so that hobbyists, engineers, and makers are never bottlenecked by budget, time, or closed ecosystems. The core is designed to be portable — anyone can fork StrawberryOS, modify the app layer, and deploy it on their own hardware.
+StrawberryOS is an open-source embedded operating system built for ESP32-based platforms. It is designed to be modular, portable, and extensible across a wide range of embedded applications. While initially developed for smartwatch hardware, the system architecture allows adaptation to other devices.
 
 ---
 
-## ⚙️ Hardware Reference Design
+## Overview
 
-| Component | Details |
-|---|---|
-| MCU | Seeed XIAO ESP32-C6 (RISC-V 160MHz, WiFi 6, BLE 5.3) |
-| Display | 0.96" SSD1306 OLED (128x64, I2C) |
-| RTC | DS3231 |
-| Battery | 1500mAh LiPo |
-| Input | 5x tactile buttons (UP, DOWN, LEFT, RIGHT, CENTER) |
-| PCB | Custom 6-layer ENIG |
-| Enclosure | 52x32mm ASA |
+StrawberryOS is developed for the Seeed XIAO ESP32-C6 and targets resource-constrained embedded systems. It is part of the broader Strawberry ecosystem, which focuses on open and adaptable embedded platforms.
 
-> Development board: ESP32-C3 SuperMini (pin-compatible for prototyping)
+This project is intended as a foundation for development and experimentation. The system is designed to be hardware-agnostic at its core, enabling developers to modify and extend functionality according to their requirements.
 
 ---
 
-## ✨ Features
+## Hardware Reference Design
 
-### Currently Implemented
-- Watch face with real-time clock via DS3231 RTC
-- Date and day of week display
-- Stopwatch with millisecond precision (MM:SS:ms)
-- Countdown timer with alert
-- Radio app with WiFi, BLE, and ESP-NOW stubs
-- WiFi network scanning and credential management (up to 5 networks)
-- NTP time synchronization over WiFi
-- Display timeout and basic power management
-- Smooth slide transition animations between screens
-- On-screen keyboard (lowercase, uppercase, symbol modes)
-- FreeRTOS-based button input task
+| Component       | Description                  |
+| --------------- | ---------------------------- |
+| Microcontroller | Seeed XIAO ESP32-C6          |
+| Display         | SSD1306 OLED (128×64, I2C)   |
+| Real-Time Clock | DS3231                       |
+| Battery         | Lithium Polymer (LiPo)       |
+| Input           | Tactile button interface     |
+| PCB             | Custom multi-layer design    |
+| Enclosure       | Compact wearable form factor |
+
+---
+
+## Features
+
+### Implemented
+
+* Real-time clock integration
+* Date and weekday display
+* Stopwatch functionality
+* Countdown timer
+* Wireless communication framework (Wi-Fi, BLE, ESP-NOW)
+* Network-based time synchronization
+* Power management and display control
+* Graphical user interface with transitions
+* On-screen input system
+* Task-based input handling
 
 ### Planned
-- BLE phone notifications
-- ESP-NOW multiplayer with named device discovery
-- Groq AI assistant via WiFi
-- Weather application
-- WhatsUp P2P messaging integration
-- Heap watchdog with BSOD error screen
-- Daily silent reboot for memory maintenance
-- LittleFS-based chat history
-- Light sleep eco mode (target: 31 days battery life)
+
+* Wireless notification support
+* Device-to-device communication features
+* External service integration
+* Environmental data applications
+* Persistent data storage
+* System monitoring and fault handling
+* Low-power optimization modes
 
 ---
 
-StrawberryOS is designed to be portable. The core is hardware-agnostic. Developers can build their own app layer for their own target device.
+## System Design
+
+StrawberryOS is structured to separate core system functionality from application-level components. This separation enables portability and simplifies adaptation to different hardware platforms.
+
+The system leverages a task-based architecture suitable for real-time embedded environments and is designed to operate within the constraints of low-power devices.
 
 ---
 
-## 🔋 Power Modes
+## Power Modes
 
-| Mode | Description | Estimated Battery Life |
-|---|---|---|
-| Normal | All radios active, full display brightness | ~1.5 days |
-| Eco | Display off, light sleep, wake on button press | ~31 days |
-
----
-
-## 🚀 Getting Started
-
-### Requirements
-- Arduino IDE, PlatformIO, or AntiGravity IDE
-- ESP32 Arduino Core
-- Libraries:
-  - `Adafruit SSD1306`
-  - `Adafruit GFX`
-  - `RTClib`
-  - `ArduinoJson`
-  - `LittleFS`
-
-### Flashing
-1. Clone this repository
-2. Open `Smartwatch.ino` in your IDE
-3. Select board: `Seeed XIAO ESP32-C6` (or `ESP32-C3 SuperMini` for development)
-4. Upload
+| Mode   | Description                                      |
+| ------ | ------------------------------------------------ |
+| Normal | Full system operation with all subsystems active |
+| Eco    | Reduced power mode with limited functionality    |
 
 ---
 
-## 📁 File Structure
+## Project Structure
 
-```
+```id="static-structure"
 StrawberryOS/
-├── StrawberryOS.ino        # Main OS source
+├── StrawberryOS.ino        # Main source file
 ├── README.md
-└── PCB/                  # EasyEDA files (coming soon)
+├── LICENSE                 # GNU General Public License v3
+└── PCB/                    # Hardware design files
 ```
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
-StrawberryOS is open to all contributors.
-
-- Found a bug? Open an issue.
-- Want a feature? Fork the repository and submit a pull request.
-- Porting to a different device? Document your changes and share them with the community.
-
-No minimum experience required. This project exists so that no developer has to start from scratch.
+Contributions are welcome. Improvements, modifications, and hardware adaptations may be submitted through standard version control workflows. Contributors are encouraged to document any significant changes.
 
 ---
 
-## 📜 License
+## License
 
-MIT License — You are free to use, modify, and distribute this project. Keeping derivatives open source is encouraged.
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
+
+Redistribution and modification are permitted under the terms of this license. Any derivative work must also be distributed under the same license, and corresponding source code must be made available.
+
+Refer to the `LICENSE` file for complete details.
 
 ---
 
-## 👤 Author
+## Author
 
-**Ashutosh** — Student, maker, and an average guy who wants to build complex stuff on his own...
+**Ashutosh**
+A Student and an ambitious Maker
