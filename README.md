@@ -1,3 +1,5 @@
+![StrawberryOS Logo](StrawberryOS.png)
+
 # StrawberryOS
 
 StrawberryOS is an open-source embedded operating system built for ESP32-based platforms. It is designed to be modular, portable, and extensible across a wide range of embedded applications. While initially developed for smartwatch hardware, the system architecture allows adaptation to other devices.
