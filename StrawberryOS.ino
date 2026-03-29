@@ -1,6 +1,6 @@
 // StrawberryOS
 // Copyright (C) 2026 Ashutosh
-// Licensed under AGPL v3 - https://www.gnu.org/licenses/agpl-3.0.html
+// Licensed under GPL v3
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
