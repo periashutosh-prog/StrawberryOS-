@@ -78,6 +78,7 @@ The system leverages a task-based architecture suitable for real-time embedded e
 StrawberryOS/
 ├── StrawberryOS.ino        # Main source file
 ├── README.md
+├── Design                  # CAD And 3D Files
 ├── LICENSE                 # GNU General Public License v3
 └── PCB/                    # Hardware design files
 ```
