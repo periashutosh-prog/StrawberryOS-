@@ -1,7 +1,3 @@
-// StrawberryOS - A smartwatch OS for ESP32
-// Copyright (C) 2026 Ashutosh
-//
-// See the LICENSE file for more details.
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
@@ -21,98 +17,76 @@
 #include <LittleFS.h>
 #include <WiFiClientSecure.h>
 
-// OLED Display Configuration
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// RTC Configuration
 RTC_DS3231 rtc;
 
-
-
-// Button Configuration
 #define BTN_UP 6
 #define BTN_DOWN 9
 #define BTN_LEFT 8
 #define BTN_RIGHT 7
 #define BTN_CENTER 10
 
-// Button state storage
 volatile bool buttonStates[5] = {false, false, false, false, false};
 const uint8_t buttonPins[5] = {BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_CENTER};
 uint8_t statusIndex = 0;
-bool isStatusActive = false; // Set to true when loading or active status needs displaying
+bool isStatusActive = false;
 
-// State Machine
 enum ScreenState {
   SCREEN_WATCHFACE, SCREEN_MENU, SCREEN_STOPWATCH, SCREEN_TIMER, SCREEN_TIMER_ALERT,
-  // Radio App
+
   SCREEN_RADIO,
   SCREEN_RADIO_WIFI, SCREEN_WIFI_CONFIRM, SCREEN_WIFI_SCANNING,
   SCREEN_WIFI_RESULTS, SCREEN_WIFI_PASSWORD, SCREEN_WIFI_KEYBOARD,
   SCREEN_WIFI_HOME, SCREEN_WIFI_TOGGLE_CONFIRM,
   SCREEN_RADIO_BLE, SCREEN_RADIO_BLE_CONFIRM, SCREEN_RADIO_ESPNOW,
-  // Power Mode
+
   SCREEN_POWER_HOME, SCREEN_WIFI_AUTO_CONFIRM, SCREEN_ESPNOW_AUTO_CONFIRM,
   SCREEN_POWER_MODE, SCREEN_POWER_MODE_HELP, SCREEN_ECO_EXIT_CONFIRM,
   SCREEN_WIFI_NTP,
-  // AI Chatbot
+
   SCREEN_AI_CHAT, SCREEN_AI_THINKING
 };
 ScreenState currentScreen = SCREEN_WATCHFACE;
 
-// Input Edge Detection
 bool lastButtonStates[5] = {false, false, false, false, false};
 bool buttonJustPressed[5] = {false, false, false, false, false};
 
-// Menu State
 const int NUM_MENU_ITEMS = 5;
 const char* menuItems[NUM_MENU_ITEMS] = {"Stopwatch", "Timer", "Radio", "AI Chat", "Lock"};
 int menuIndex = 0;
 
-// Stopwatch State
 unsigned long swStartTime = 0;
 unsigned long swElapsedTime = 0;
 bool swRunning = false;
-int swFocus = 0; // 0 = Back, 1 = Start/Pause, 2 = Stop/Reset
+int swFocus = 0;
 
-// Timer State
 enum TimerMode { TM_SETTING, TM_READY, TM_RUNNING, TM_RINGING };
 TimerMode tmMode = TM_SETTING;
 int tmHours = 0, tmMinutes = 0, tmSeconds = 0;
-int tmActiveUnit = 2; // Default to seconds
-int tmFocus = 1;      // Default to [+]
+int tmActiveUnit = 2;
+int tmFocus = 1;
 unsigned long tmRemainingMillis = 0;
 unsigned long tmLastTick = 0;
 unsigned long tmSetPressStart = 0;
 bool tmLongPressTriggered = false;
 
-// Transition Animation
 bool isAnimating = false;
 int animOffsetY = 0;
 int animTargetY = 0;
 ScreenState animNextScreen = SCREEN_WATCHFACE;
 
-// Power Management
 unsigned long lastActivityTime = 0;
 const unsigned long DISPLAY_TIMEOUT_MS = 5000;
 bool displayOn = true;
 
-// ============================================================
-// RADIO APP STATE
-// ============================================================
-
-// --- Keyboard ---
 enum KBMode { KB_LOWER, KB_UPPER, KB_SYMBOL };
 KBMode currentKBMode = KB_LOWER;
 int kbCursorRow = 0, kbCursorCol = 0;
-// 3 rows × 10 cols (number row removed as requested)
-// Row 0: QWERTYUIOP / !@#$%^&*()
-// Row 1: ASDFGHJKL / 1234567890
-// Row 2: ZXCVBNM / symbols
-// Row 3: special keys
+
 const char* kbLower[4][11] = {
   {"q","w","e","r","t","y","u","i","o","p","."},
   {"a","s","d","f","g","h","j","k","l",",","?"},
@@ -132,13 +106,12 @@ const char* kbSymbol[4][11] = {
   {"[","]","{","}","<",">","#","_","."," ","EN"}
 };
 
-// --- WiFi ---
 bool wifiAutoOn = false;
 bool espNowAutoOn = false;
 String lastConnectedSSID = "";
 bool wifiEnabled = false;
 int wifiScanResults = 0;
-int wifiListIndex = -1; // -1 = back selected
+int wifiListIndex = -1;
 int wifiListScroll = 0;
 String wifiTargetSSID = "";
 String wifiPassword = "";
@@ -146,83 +119,74 @@ String wifiStatusMsg = "";
 bool wifiConnecting = false;
 unsigned long wifiScanStart = 0;
 unsigned long wifiConnectStartTime = 0;
-int wifiHomeCursor = -1; // -1 = back, 0..N = items
-int wifiConfirmCursor = 0; // 0=YES 1=NO
+int wifiHomeCursor = -1;
+int wifiConfirmCursor = 0;
 int wifiToggleCursor = 0;
-int wifiPasswordCursor = 1; // 0=KEYBOARD, 1=CONNECT
+int wifiPasswordCursor = 1;
 unsigned long ntpSyncStart = 0;
 unsigned long ntpSyncEnd = 0;
-int ntpSyncState = 0; // 0=requesting, 1=success, 2=failed
+int ntpSyncState = 0;
 int wifiRetryCount = 0;
 
-// Input buffer for keyboard
 String kbInputBuffer = "";
 int kbTextCursor = 0;
 int kbScrollOffset = 0;
 ScreenState kbReturnScreen = SCREEN_WIFI_PASSWORD;
 
-// --- BLE ---
 BLEServer* pBleServer = NULL;
 BLECharacteristic* pBleNameCharacteristic = NULL;
 bool bleConnected = false;
 String bleDeviceName = "Ashutosh's Smartwatch";
 String bleRemoteDeviceName = "None";
 bool bleSettingAccess = false;
-int bleHomeCursor = 0; // 0=Name, 1=Setting Access (if connected)
-int bleConfirmMode = 0; // 0=Rename, 1=Disconnect, 2=Forget, 3=SettingToggle
-int bleConfirmCursor = 0; // 0=YES, 1=NO
+int bleHomeCursor = 0;
+int bleConfirmMode = 0;
+int bleConfirmCursor = 0;
 
-// --- Saved credentials (up to 5 networks) ---
 Preferences prefs;
 const int MAX_SAVED_NETS = 5;
 String savedSSIDs[MAX_SAVED_NETS];
 String savedPWDs[MAX_SAVED_NETS];
 int savedNetCount = 0;
 
-// --- Internet pingers ---
 bool pingerStatus[5] = {false, false, false, false, false};
 bool internetOK = false;
 volatile bool statusChanged = false;
 
-// NTP
 const char* ntpServer = "pool.ntp.org";
-const long gmtOffset_sec = 19800; // IST = UTC+5:30
+const long gmtOffset_sec = 19800;
 const int daylightOffset_sec = 0;
 
-// Radio home cursor
-int radioCursor = 0; // 0=WiFi,1=BLE,2=ESP-NOW
-int powerHomeCursor = 0; // 0=WiFi Auto, 1=ESP-NOW Auto, 2=Eco Mode
+int radioCursor = 0;
+int powerHomeCursor = 0;
 
-// Power Mode State
 enum PowerModeType { POWER_NORMAL, POWER_ECO };
 PowerModeType currentPowerMode = POWER_NORMAL;
-int powerModeButtonCursor = 0; // 0=Yes, 1=Help, 2=No
+int powerModeButtonCursor = 0;
 bool ecoModeActive = false;
 unsigned long ecoModeSleepStart = 0;
-const unsigned long ECO_MODE_SLEEP_DURATION = 5000; // 5 seconds
-unsigned long ecoExitPressStart = 0; // Track center button press time for Eco exit
-const unsigned long ECO_EXIT_PRESS_DURATION = 5000; // 5 seconds to exit
-int ecoExitConfirmCursor = 1; // -1=Back, 0=Yes, 1=No (default to No)
+const unsigned long ECO_MODE_SLEEP_DURATION = 5000;
+unsigned long ecoExitPressStart = 0;
+const unsigned long ECO_EXIT_PRESS_DURATION = 5000;
+int ecoExitConfirmCursor = 1;
 unsigned long ecoDeepSleepStart = 0;
-const unsigned long ECO_DEEP_SLEEP_DELAY = 500; // 500ms after display off before deep sleep
+const unsigned long ECO_DEEP_SLEEP_DELAY = 500;
 
-// --- AI Chatbot ---
 int aiMsgCount = 0;
 int aiChatScroll = 0;
 bool aiScrollMode = false;
-int aiCursor = 0;           // -2=back, -1=clear(C), 0=chat, 1=input, 2=send
+int aiCursor = 0;
 String aiInputText = "";
 bool aiThinking = false;
 unsigned long aiThinkStart = 0;
 String aiResponse = "";
 volatile bool aiResponseReady = false;
 volatile bool aiResponseError = false;
-const char* GROQ_API_KEY = "YOUR_GROQ_API_KEY";
+const char* GROQ_API_KEY = "GROQ_API_KEY";
 const int AI_MAX_MESSAGES = 500;
-String aiCache[5];          // Cache visible messages
-int aiCacheScrollUsed = -1; // Track which scroll offset is cached
+String aiCache[5];
+int aiCacheScrollUsed = -1;
 
-// Prototypes
 void updateDisplay();
 void drawScreen(ScreenState screen, int yOffset);
 void drawHeader(int yOffset, const char* appName = nullptr, bool backFocused = false);
@@ -234,7 +198,7 @@ void drawTimerAlert(int yOffset);
 void drawCenteredText(Adafruit_SSD1306 &d, const String &text, int16_t y, uint8_t size = 1);
 void drawBoxedCenteredText(Adafruit_SSD1306 &d, const char* text, int x, int y, int w, int h, bool inverted);
 void startAnimation(ScreenState next, int targetOffset);
-// AI Chatbot prototypes
+
 int aiCountMessages();
 void aiAddMessage(const String& msg);
 void aiClearChat();
@@ -245,7 +209,7 @@ void aiSendTask(void* param);
 void aiUpdateCache();
 void buttonReadTask(void *pvParameters);
 void printButtonStates();
-// Radio prototypes
+
 void drawRadioHome(int yOffset);
 void drawRadioWifi(int yOffset);
 void drawWifiConfirm(int yOffset);
@@ -278,12 +242,10 @@ void connectivityAggregator(void *p);
 void setup() {
   Serial.begin(115200);
   delay(100);
-  
-  // Initialize I2C on pins 4 (SDA) and 5 (SCL)
+
   Wire.begin(4, 5);
   delay(100);
-  
-  // Initialize OLED Display
+
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("SSD1306 allocation failed"));
     while (1);
@@ -291,11 +253,10 @@ void setup() {
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  // Skip initialization message
+
   display.display();
   delay(100);
-  
-  // Initialize RTC
+
   if (!rtc.begin()) {
     Serial.println("RTC not found!");
     display.clearDisplay();
@@ -304,45 +265,36 @@ void setup() {
     display.display();
     while (1);
   }
-  
-  // Uncomment to set RTC time (set once, then comment out)
-  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-  
-  // Initialize Button Pins
+
   pinMode(BTN_UP, INPUT_PULLUP);
   pinMode(BTN_DOWN, INPUT_PULLUP);
   pinMode(BTN_LEFT, INPUT_PULLUP);
   pinMode(BTN_RIGHT, INPUT_PULLUP);
   pinMode(BTN_CENTER, INPUT_PULLUP);
-  
-  // Create FreeRTOS task for reading buttons
+
   xTaskCreate(
-    buttonReadTask,      // Task function
-    "ButtonReader",      // Task name
-    2048,                // Stack size
-    NULL,                // Parameters
-    1,                   // Priority
-    NULL                 // Task handle
+    buttonReadTask,
+    "ButtonReader",
+    2048,
+    NULL,
+    1,
+    NULL
   );
-  
+
   Serial.println("Display and RTC initialized!");
-  
-  // Load saved WiFi credentials from NVS
+
   loadCredentials();
-  
+
   WiFi.mode(WIFI_STA);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm); // Force maximum radio transmit power (19.5 decibels) to punch through hardware interference! 
-  WiFi.setSleep(true); // Enable modem sleep to save battery
-  WiFi.disconnect(true); // Ensure no ghost connection from previous boots
+	WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  WiFi.setSleep(true);
+  WiFi.disconnect(true);
   delay(100);
-  
-  // Start internet pinger tasks
+
   startWifiPingers();
-  
-  // Initialize BLE
+
   initBLE();
-  
-  // Load Power mode settings
+
   prefs.begin("powermode", false);
   ecoModeActive = prefs.getBool("ecoMode", false);
   wifiAutoOn = prefs.getBool("wifiAutoOn", false);
@@ -350,21 +302,18 @@ void setup() {
   lastConnectedSSID = prefs.getString("lastSSID", "");
   prefs.end();
 
-  // Initialize LittleFS for AI chat storage
   if (!LittleFS.begin(true)) {
     Serial.println("LittleFS mount failed");
   }
   aiMsgCount = aiCountMessages();
   aiUpdateCache();
 
-  // If WiFi Auto On is enabled, set wifiEnabled to true so background task starts
   if (wifiAutoOn) {
     wifiEnabled = true;
     WiFi.mode(WIFI_STA);
-    WiFi.begin(); // Start driver
+    WiFi.begin();
   }
 
-  // Create FreeRTOS task for background WiFi
   xTaskCreate(
     wifiBackgroundTask,
     "WiFiBack",
@@ -373,38 +322,34 @@ void setup() {
     1,
     NULL
   );
-  
+
   lastActivityTime = millis();
 }
 
 void loop() {
   bool activityDetected = false;
 
-  // Edge detection logic
   for (int i = 0; i < 5; i++) {
     buttonJustPressed[i] = buttonStates[i] && !lastButtonStates[i];
     lastButtonStates[i] = buttonStates[i];
     if (buttonStates[i]) activityDetected = true;
   }
 
-  // Handle Display Wake/Sleep
   if (activityDetected) {
     lastActivityTime = millis();
     if (ecoModeActive) ecoModeSleepStart = millis();
     if (!displayOn) {
       display.ssd1306_command(SSD1306_DISPLAYON);
       displayOn = true;
-      currentScreen = SCREEN_WATCHFACE; // Always return to watchface on wake
+      currentScreen = SCREEN_WATCHFACE;
       animOffsetY = 0;
       isAnimating = false;
-      // We don't process the initial wake-up click as an action
-      // to prevent accidental clicks when waking the watch
+
       for (int i = 0; i < 5; i++) buttonJustPressed[i] = false;
     }
   }
 
-  // Check timeout (only inhibit sleep if stopwatch running, timer ringing, or WiFi scanning/connecting)
-  bool inhibitSleep = (currentScreen == SCREEN_STOPWATCH && swRunning) || 
+  bool inhibitSleep = (currentScreen == SCREEN_STOPWATCH && swRunning) ||
                       (currentScreen == SCREEN_TIMER && tmMode == TM_RINGING) ||
                       (currentScreen == SCREEN_TIMER_ALERT) ||
                       (currentScreen == SCREEN_WIFI_SCANNING) ||
@@ -413,7 +358,7 @@ void loop() {
                       (currentScreen == SCREEN_AI_THINKING);
 
   if (displayOn && !inhibitSleep) {
-    // Eco mode: check eco sleep timer
+
     if (ecoModeActive && currentScreen == SCREEN_WATCHFACE) {
       if (millis() - ecoModeSleepStart > ECO_MODE_SLEEP_DURATION) {
         display.ssd1306_command(SSD1306_DISPLAYOFF);
@@ -421,7 +366,7 @@ void loop() {
         ecoDeepSleepStart = millis();
       }
     } else {
-      // Normal mode: check activity timeout
+
       if (millis() - lastActivityTime > DISPLAY_TIMEOUT_MS) {
         display.ssd1306_command(SSD1306_DISPLAYOFF);
         displayOn = false;
@@ -429,59 +374,52 @@ void loop() {
     }
   }
 
-  // Eco mode: enter deep sleep after display off
   if (!displayOn && ecoModeActive && currentScreen == SCREEN_WATCHFACE) {
     if (millis() - ecoDeepSleepStart > ECO_DEEP_SLEEP_DELAY) {
-      // Disable WiFi, BLE, and other radios to save power
-      WiFi.disconnect(true); // poweroff = true
+
+      WiFi.disconnect(true);
       WiFi.mode(WIFI_OFF);
       esp_bt_controller_disable();
-      
-      // Ensure button pins are configured as inputs with pull-ups (RTC domain)
+
       gpio_set_direction((gpio_num_t)BTN_UP, GPIO_MODE_INPUT);
       gpio_set_direction((gpio_num_t)BTN_DOWN, GPIO_MODE_INPUT);
       gpio_set_direction((gpio_num_t)BTN_LEFT, GPIO_MODE_INPUT);
       gpio_set_direction((gpio_num_t)BTN_RIGHT, GPIO_MODE_INPUT);
       gpio_set_direction((gpio_num_t)BTN_CENTER, GPIO_MODE_INPUT);
-      
-      // Enable pull-ups via RTC domain GPIO
+
       gpio_pullup_en((gpio_num_t)BTN_UP);
       gpio_pullup_en((gpio_num_t)BTN_DOWN);
       gpio_pullup_en((gpio_num_t)BTN_LEFT);
       gpio_pullup_en((gpio_num_t)BTN_RIGHT);
       gpio_pullup_en((gpio_num_t)BTN_CENTER);
-      
-      // Configure GPIO wake-up for all buttons (active low) using RTC domain
+
       esp_sleep_enable_gpio_wakeup();
       gpio_wakeup_enable((gpio_num_t)BTN_UP, GPIO_INTR_LOW_LEVEL);
       gpio_wakeup_enable((gpio_num_t)BTN_DOWN, GPIO_INTR_LOW_LEVEL);
       gpio_wakeup_enable((gpio_num_t)BTN_LEFT, GPIO_INTR_LOW_LEVEL);
       gpio_wakeup_enable((gpio_num_t)BTN_RIGHT, GPIO_INTR_LOW_LEVEL);
       gpio_wakeup_enable((gpio_num_t)BTN_CENTER, GPIO_INTR_LOW_LEVEL);
-      
-      // Enter deep sleep
+
       esp_deep_sleep_start();
     }
   }
 
-  // Turn screen ON automatically if stopwatch is running and we are on the stopwatch screen
   if (!displayOn && currentScreen == SCREEN_STOPWATCH && swRunning) {
       display.ssd1306_command(SSD1306_DISPLAYON);
       displayOn = true;
       lastActivityTime = millis();
   }
 
-  // Poll WiFi scan results OUTSIDE the displayOn gate so results are never missed
   if (currentScreen == SCREEN_WIFI_SCANNING && !isAnimating) {
-    lastActivityTime = millis(); // keep display alive
+    lastActivityTime = millis();
     int result = WiFi.scanComplete();
     static bool scanRetried = false;
-    
+
     if (result >= 0) {
       wifiScanResults = result;
       wifiListIndex = 0; wifiListScroll = 0;
       startAnimation(SCREEN_WIFI_RESULTS, -64);
-      scanRetried = false; // Reset for next time
+      scanRetried = false;
     } else if (result == WIFI_SCAN_FAILED) {
       if (!scanRetried) {
         scanRetried = true;
@@ -492,14 +430,13 @@ void loop() {
         scanRetried = false;
       }
     } else if (millis() - wifiScanStart > 8000) {
-      WiFi.scanDelete(); // Cleanup on timeout
+      WiFi.scanDelete();
       wifiScanResults = 0;
       startAnimation(SCREEN_WIFI_RESULTS, -64);
       scanRetried = false;
     }
   }
 
-  // Poll NTP async
   if (currentScreen == SCREEN_WIFI_NTP && !isAnimating) {
     lastActivityTime = millis();
     if (ntpSyncState == 0) {
@@ -511,18 +448,17 @@ void loop() {
         ntpSyncState = 1;
         ntpSyncEnd = millis();
       } else if (millis() - ntpSyncStart > 5000) {
-        ntpSyncState = 2; // failed timeout
+        ntpSyncState = 2;
         ntpSyncEnd = millis();
       }
     } else {
-      if (millis() - ntpSyncEnd > 2000) { // wait 2 sec on error or success
+      if (millis() - ntpSyncEnd > 2000) {
         startAnimation(SCREEN_WIFI_HOME, -64);
         ntpSyncState = 0;
       }
     }
   }
 
-  // Poll AI Thinking response
   if (currentScreen == SCREEN_AI_THINKING && !isAnimating) {
     lastActivityTime = millis();
     if (aiResponseReady) {
@@ -544,96 +480,93 @@ void loop() {
     }
   }
 
-  // Only process UI if display is on
   if (displayOn) {
-    // Handle Animations
+
     if (isAnimating) {
       if (animOffsetY < animTargetY) animOffsetY += 8;
       else if (animOffsetY > animTargetY) animOffsetY -= 8;
-      
+
       if (abs(animOffsetY - animTargetY) < 8) {
         animOffsetY = 0;
         currentScreen = animNextScreen;
         isAnimating = false;
       }
     } else {
-      // Handle Input based on current screen
+
       if (currentScreen == SCREEN_WATCHFACE) {
-        // In Eco mode, any button wakes and resets sleep timer
-        if (ecoModeActive && (buttonJustPressed[0] || buttonJustPressed[1] || buttonJustPressed[2] 
+
+        if (ecoModeActive && (buttonJustPressed[0] || buttonJustPressed[1] || buttonJustPressed[2]
                               || buttonJustPressed[3] || buttonJustPressed[4])) {
           ecoModeSleepStart = millis();
         }
-        
-        // In Eco mode, track center button press for long press exit
-        if (ecoModeActive && buttonStates[4]) { // CENTER button is held
+
+        if (ecoModeActive && buttonStates[4]) {
           if (ecoExitPressStart == 0) {
             ecoExitPressStart = millis();
           }
-          // Check if button held for 5 seconds
+
           if (millis() - ecoExitPressStart >= ECO_EXIT_PRESS_DURATION) {
-            ecoExitConfirmCursor = 1; // Default to "No"
+            ecoExitConfirmCursor = 1;
             startAnimation(SCREEN_ECO_EXIT_CONFIRM, -64);
-            ecoExitPressStart = 0; // Reset
+            ecoExitPressStart = 0;
           }
         } else {
-          // Button released, reset timer
+
           ecoExitPressStart = 0;
         }
-        
-        // Only allow menu access if NOT in Eco mode
-        if (!ecoModeActive && buttonJustPressed[0]) { // UP button -> Menu
-          startAnimation(SCREEN_MENU, -64); // Slide up
+
+        if (!ecoModeActive && buttonJustPressed[0]) {
+          startAnimation(SCREEN_MENU, -64);
         }
-      } 
+      }
       else if (currentScreen == SCREEN_MENU) {
-        if (buttonJustPressed[0]) { // UP
+        if (buttonJustPressed[0]) {
           menuIndex = (menuIndex - 1 + NUM_MENU_ITEMS) % NUM_MENU_ITEMS;
         }
-        if (buttonJustPressed[1]) { // DOWN
+        if (buttonJustPressed[1]) {
           menuIndex = (menuIndex + 1) % NUM_MENU_ITEMS;
         }
-        if (buttonJustPressed[4]) { // CENTER (Click)
+        if (buttonJustPressed[4]) {
           if (menuIndex == 0) {
           swFocus = 1;
           startAnimation(SCREEN_STOPWATCH, -64);
-        } else if (menuIndex == 1) { // Timer
+        } else if (menuIndex == 1) {
           tmMode = TM_SETTING;
           tmFocus = 1;
           startAnimation(SCREEN_TIMER, -64);
-        } else if (menuIndex == 2) { // Radio
+        } else if (menuIndex == 2) {
           radioCursor = 0;
           startAnimation(SCREEN_RADIO, -64);
-        } else if (menuIndex == 3) { // AI Chat
+        } else if (menuIndex == 3) {
           aiCursor = 0;
           aiScrollMode = false;
           aiChatScroll = max(0, aiMsgCount - 4);
           aiUpdateCache();
           startAnimation(SCREEN_AI_CHAT, -64);
-        } else if (menuIndex == 4) { // Lock
+        } else if (menuIndex == 4) {
           startAnimation(SCREEN_WATCHFACE, 64);
         }
         }
       }
       else if (currentScreen == SCREEN_STOPWATCH) {
-        // Stopwatch Navigation
-        if (buttonJustPressed[0]) { // UP
-          if (swFocus == 1 || swFocus == 2) swFocus = 0; // Go up to back button
+
+        if (buttonJustPressed[0]) {
+          if (swFocus == 1 || swFocus == 2) swFocus = 0;
         }
-        if (buttonJustPressed[1]) { // DOWN
-          if (swFocus == 0) swFocus = 1; // Go down to start button
+        if (buttonJustPressed[1]) {
+          if (swFocus == 0) swFocus = 1;
         }
-        if (buttonJustPressed[2]) { // LEFT
-          if (swFocus == 2) swFocus = 1; // From reset to start
+        if (buttonJustPressed[2]) {
+          if (swFocus == 2) swFocus = 1;
         }
-        if (buttonJustPressed[3]) { // RIGHT
-          if (swFocus == 1) swFocus = 2; // From start to reset
+        if (buttonJustPressed[3]) {
+          if (swFocus == 1) swFocus = 2;
         }
-        
-        if (buttonJustPressed[4]) { // CENTER (Click)
-          if (swFocus == 0) { // Back
+
+        if (buttonJustPressed[4]) {
+          if (swFocus == 0) {
             startAnimation(SCREEN_MENU, 64);
-          } else if (swFocus == 1) { // START/PAUSE
+          } else if (swFocus == 1) {
             if (swRunning) {
               swElapsedTime += millis() - swStartTime;
               swRunning = false;
@@ -641,35 +574,35 @@ void loop() {
               swStartTime = millis();
               swRunning = true;
             }
-          } else if (swFocus == 2) { // STOP/RESET
-            if (swRunning) { // STOP
+          } else if (swFocus == 2) {
+            if (swRunning) {
               swElapsedTime += millis() - swStartTime;
               swRunning = false;
-            } else { // RESET
+            } else {
               swElapsedTime = 0;
             }
           }
         }
       }
       else if (currentScreen == SCREEN_STOPWATCH) {
-      // Stopwatch Navigation
-      if (buttonJustPressed[0]) { // UP
-        if (swFocus == 1 || swFocus == 2) swFocus = 0; // Go up to back button
+
+      if (buttonJustPressed[0]) {
+        if (swFocus == 1 || swFocus == 2) swFocus = 0;
       }
-      if (buttonJustPressed[1]) { // DOWN
-        if (swFocus == 0) swFocus = 1; // Go down to start button
+      if (buttonJustPressed[1]) {
+        if (swFocus == 0) swFocus = 1;
       }
-      if (buttonJustPressed[2]) { // LEFT
-        if (swFocus == 2) swFocus = 1; // From reset to start
+      if (buttonJustPressed[2]) {
+        if (swFocus == 2) swFocus = 1;
       }
-      if (buttonJustPressed[3]) { // RIGHT
-        if (swFocus == 1) swFocus = 2; // From start to reset
+      if (buttonJustPressed[3]) {
+        if (swFocus == 1) swFocus = 2;
       }
-      
-      if (buttonJustPressed[4]) { // CENTER (Click)
-        if (swFocus == 0) { // Back
+
+      if (buttonJustPressed[4]) {
+        if (swFocus == 0) {
           startAnimation(SCREEN_MENU, 64);
-        } else if (swFocus == 1) { // START/PAUSE
+        } else if (swFocus == 1) {
           if (swRunning) {
             swElapsedTime += millis() - swStartTime;
             swRunning = false;
@@ -677,77 +610,76 @@ void loop() {
             swStartTime = millis();
             swRunning = true;
           }
-        } else if (swFocus == 2) { // STOP/RESET
-          if (swRunning) { // STOP
+        } else if (swFocus == 2) {
+          if (swRunning) {
             swElapsedTime += millis() - swStartTime;
             swRunning = false;
-          } else { // RESET
+          } else {
             swElapsedTime = 0;
           }
         }
       }
     }
     else if (currentScreen == SCREEN_TIMER) {
-        // Timer Header Navigation
-        if (buttonJustPressed[0]) { // UP
-          if (tmFocus > 0) tmFocus = 0; // Go to <--
+
+        if (buttonJustPressed[0]) {
+          if (tmFocus > 0) tmFocus = 0;
         }
-        if (buttonJustPressed[1]) { // DOWN
-          if (tmFocus == 0) tmFocus = 1; // From <-- to [+]
+        if (buttonJustPressed[1]) {
+          if (tmFocus == 0) tmFocus = 1;
         }
-        if (buttonJustPressed[2]) { // LEFT
+        if (buttonJustPressed[2]) {
           if (tmMode == TM_SETTING) {
-            if (tmFocus == 2) tmFocus = 1; // From SET to +
-            else if (tmFocus == 3) tmFocus = 2; // From - to SET
-            else if (tmFocus == 1) tmFocus = 0; // From + to <--
+            if (tmFocus == 2) tmFocus = 1;
+            else if (tmFocus == 3) tmFocus = 2;
+            else if (tmFocus == 1) tmFocus = 0;
           } else if (tmMode == TM_READY) {
-            if (tmFocus == 3) tmFocus = 1; // From START back to SET
-            else if (tmFocus == 1) tmFocus = 0; // From SET back to <--
+            if (tmFocus == 3) tmFocus = 1;
+            else if (tmFocus == 1) tmFocus = 0;
           }
         }
-        if (buttonJustPressed[3]) { // RIGHT
+        if (buttonJustPressed[3]) {
           if (tmMode == TM_SETTING) {
-            if (tmFocus == 1) tmFocus = 2; // From + to SET
-            else if (tmFocus == 2) tmFocus = 3; // From SET to -
+            if (tmFocus == 1) tmFocus = 2;
+            else if (tmFocus == 2) tmFocus = 3;
           } else if (tmMode == TM_READY) {
-            if (tmFocus == 1) tmFocus = 3; // From SET to START
+            if (tmFocus == 1) tmFocus = 3;
           }
         }
 
-        // Handle Long Press Detection for SET (Center Button while focus is SET)
         if (buttonStates[4] && tmFocus == 2 && tmMode == TM_SETTING) {
           if (tmSetPressStart == 0) tmSetPressStart = millis();
           if (millis() - tmSetPressStart > 2000 && !tmLongPressTriggered) {
-            tmMode = TM_READY; // Switch to Ready mode
-            tmFocus = 3; // Default focus to [START]
+            tmMode = TM_READY;
+            tmFocus = 3;
             tmLongPressTriggered = true;
-            // Haptic or visual feedback could be added here
+
           }
         } else {
           tmSetPressStart = 0;
           tmLongPressTriggered = false;
         }
 
-        if (buttonJustPressed[4]) { // CENTER (Click)
-          if (tmFocus == 0) { // Back
+        if (buttonJustPressed[4]) {
+          if (tmFocus == 0) {
             startAnimation(SCREEN_MENU, 64);
-          } 
+          }
           else if (tmMode == TM_SETTING) {
-            if (tmFocus == 1) { // [+]
+            if (tmFocus == 1) {
               if (tmActiveUnit == 0) tmHours = (tmHours + 1) % 24;
               else if (tmActiveUnit == 1) tmMinutes = (tmMinutes + 1) % 60;
               else if (tmActiveUnit == 2) tmSeconds = (tmSeconds + 1) % 60;
-            } else if (tmFocus == 2) { // [SET]
+            } else if (tmFocus == 2) {
               tmActiveUnit = (tmActiveUnit + 1) % 3;
-            } else if (tmFocus == 3) { // [-]
+            } else if (tmFocus == 3) {
               if (tmActiveUnit == 0) tmHours = (tmHours + 23) % 24;
               else if (tmActiveUnit == 1) tmMinutes = (tmMinutes + 59) % 60;
               else if (tmActiveUnit == 2) tmSeconds = (tmSeconds + 59) % 60;
             }
           }
           else if (tmMode == TM_READY) {
-            if (tmFocus == 1) tmMode = TM_SETTING; // [SET] returns to setting
-            else if (tmFocus == 3) { // [START]
+            if (tmFocus == 1) tmMode = TM_SETTING;
+            else if (tmFocus == 3) {
               tmRemainingMillis = ((unsigned long)tmHours * 3600 + tmMinutes * 60 + tmSeconds) * 1000;
               if (tmRemainingMillis > 0) {
                 tmMode = TM_RUNNING;
@@ -756,24 +688,22 @@ void loop() {
             }
           }
           else if (tmMode == TM_RUNNING) {
-            if (tmFocus == 1) tmMode = TM_READY; // [RESET]
-            else if (tmFocus == 3) { 
-              // Pause logic could go here, but user asked for START -> PAUSE/RESET
-              // Assuming START becomes PAUSE and SET stays as SET (to go back)
+            if (tmFocus == 1) tmMode = TM_READY;
+            else if (tmFocus == 3) {
+
             }
           }
         }
       }
       else if (currentScreen == SCREEN_TIMER_ALERT) {
-        if (buttonJustPressed[0] || buttonJustPressed[1] || buttonJustPressed[2] || 
+        if (buttonJustPressed[0] || buttonJustPressed[1] || buttonJustPressed[2] ||
             buttonJustPressed[3] || buttonJustPressed[4]) {
           tmMode = TM_SETTING;
-          startAnimation(SCREEN_WATCHFACE, 64); // Return to home
+          startAnimation(SCREEN_WATCHFACE, 64);
         }
       }
     }
 
-    // Timer Background Logic
     if (tmMode == TM_RUNNING) {
       unsigned long now = millis();
       unsigned long delta = now - tmLastTick;
@@ -792,30 +722,27 @@ void loop() {
       }
     }
 
-    // =========================================
-    // RADIO APP NAVIGATION
-    // =========================================
     else if (currentScreen == SCREEN_RADIO) {
-      if (buttonJustPressed[0]) { if (radioCursor > -1) radioCursor--; } // Allow going up to -1 (the <-- button)
+      if (buttonJustPressed[0]) { if (radioCursor > -1) radioCursor--; }
       if (buttonJustPressed[1]) { if (radioCursor < 3) radioCursor++; }
       if (buttonJustPressed[2]) {
-        if (radioCursor == -1) radioCursor = 0; // LEFT moves off back button
+        if (radioCursor == -1) radioCursor = 0;
       }
-      if (buttonJustPressed[4]) { // CENTER
+      if (buttonJustPressed[4]) {
         if (radioCursor == -1) {
           startAnimation(SCREEN_MENU, 64);
         }
         else if (radioCursor == 0) {
           if (WiFi.status() == WL_CONNECTED) { wifiHomeCursor = 0; startAnimation(SCREEN_WIFI_HOME, -64); }
           else if (wifiAutoOn || wifiEnabled) {
-            // Join an active scan if one is already running, otherwise start a new one
+
             if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
               wifiScanStart = millis();
               wifiScanResults = -1;
               startAnimation(SCREEN_WIFI_SCANNING, -64);
             } else {
-              WiFi.scanDelete(); 
-              WiFi.disconnect(); 
+              WiFi.scanDelete();
+              WiFi.disconnect();
               vTaskDelay(pdMS_TO_TICKS(100));
               WiFi.scanNetworks(true, false, false, 250);
               wifiScanStart = millis();
@@ -837,16 +764,16 @@ void loop() {
       if (buttonJustPressed[1]) { if (powerHomeCursor < 2) powerHomeCursor++; }
       if (buttonJustPressed[4]) {
         if (powerHomeCursor == -1) startAnimation(SCREEN_RADIO, 64);
-        else if (powerHomeCursor == 0) { 
-          wifiConfirmCursor = wifiAutoOn ? 1 : 0; 
-          startAnimation(SCREEN_WIFI_AUTO_CONFIRM, -64); 
+        else if (powerHomeCursor == 0) {
+          wifiConfirmCursor = wifiAutoOn ? 1 : 0;
+          startAnimation(SCREEN_WIFI_AUTO_CONFIRM, -64);
         }
-        else if (powerHomeCursor == 1) { 
-          wifiConfirmCursor = espNowAutoOn ? 1 : 0; // reusing cursor
-          startAnimation(SCREEN_ESPNOW_AUTO_CONFIRM, -64); 
+        else if (powerHomeCursor == 1) {
+          wifiConfirmCursor = espNowAutoOn ? 1 : 0;
+          startAnimation(SCREEN_ESPNOW_AUTO_CONFIRM, -64);
         }
         else if (powerHomeCursor == 2) {
-          powerModeButtonCursor = 2; // Default to NO
+          powerModeButtonCursor = 2;
           startAnimation(SCREEN_POWER_MODE, -64);
         }
       }
@@ -885,9 +812,9 @@ void loop() {
     }
     else if (currentScreen == SCREEN_RADIO_BLE) {
       if (buttonJustPressed[0]) { if (bleHomeCursor > -1) bleHomeCursor--; }
-      if (buttonJustPressed[1]) { 
+      if (buttonJustPressed[1]) {
         int maxCur = bleConnected ? 1 : 0;
-        if (bleHomeCursor < maxCur) bleHomeCursor++; 
+        if (bleHomeCursor < maxCur) bleHomeCursor++;
       }
       if (buttonJustPressed[4]) {
         if (bleHomeCursor == -1) startAnimation(SCREEN_RADIO, 64);
@@ -901,8 +828,8 @@ void loop() {
             kbReturnScreen = SCREEN_RADIO_BLE;
             kbCursorRow = 0; kbCursorCol = 0;
             currentKBMode = KB_LOWER;
-            currentScreen = SCREEN_WIFI_KEYBOARD; 
-          } else if (bleHomeCursor == 1) { // Setting
+            currentScreen = SCREEN_WIFI_KEYBOARD;
+          } else if (bleHomeCursor == 1) {
             bleConfirmMode = 3; bleConfirmCursor = 0;
             startAnimation(SCREEN_RADIO_BLE_CONFIRM, -64);
           }
@@ -910,25 +837,25 @@ void loop() {
       }
     }
     else if (currentScreen == SCREEN_RADIO_BLE_CONFIRM) {
-      if (buttonJustPressed[0]) { bleConfirmCursor = -1; } // UP = back arrow
-      if (buttonJustPressed[2]) { if (bleConfirmCursor != -1) bleConfirmCursor = 0; } // LEFT = YES
-      if (buttonJustPressed[3]) { if (bleConfirmCursor != -1) bleConfirmCursor = 1; } // RIGHT = NO
-      if (buttonJustPressed[1]) { if (bleConfirmCursor == -1) bleConfirmCursor = 0; } // DOWN = enter buttons
+      if (buttonJustPressed[0]) { bleConfirmCursor = -1; }
+      if (buttonJustPressed[2]) { if (bleConfirmCursor != -1) bleConfirmCursor = 0; }
+      if (buttonJustPressed[3]) { if (bleConfirmCursor != -1) bleConfirmCursor = 1; }
+      if (buttonJustPressed[1]) { if (bleConfirmCursor == -1) bleConfirmCursor = 0; }
       if (buttonJustPressed[4]) {
-        if (bleConfirmCursor == -1 || bleConfirmCursor == 1) { // Back or NO
+        if (bleConfirmCursor == -1 || bleConfirmCursor == 1) {
           startAnimation(SCREEN_RADIO_BLE, 64);
         } else if (bleConfirmCursor == 0) {
           if (bleConfirmMode == 0) {
             bleDeviceName = kbInputBuffer;
             saveBleSettings();
-            // Re-advertise with new name using standard library call
+
             BLEDevice::getAdvertising()->stop();
             BLEDevice::getAdvertising()->setName(bleDeviceName.c_str());
             BLEDevice::getAdvertising()->start();
           } else if (bleConfirmMode == 1 || bleConfirmMode == 2) {
-            // Safe disconnect: close all active connections by ID range
+
             bleConnected = false;
-            bleHomeCursor = 0; // Focus OK on return
+            bleHomeCursor = 0;
             if (pBleServer) {
               uint16_t numClients = pBleServer->getConnectedCount();
               for (uint16_t i = 0; i < numClients; i++) {
@@ -954,22 +881,20 @@ void loop() {
       if (buttonJustPressed[4]) {
         if (wifiConfirmCursor == 0) {
           wifiEnabled = true;
-          wifiStatusMsg = ""; // Reset status
-          wifiRetryCount = 0; // Reset retries
+          wifiStatusMsg = "";
+          wifiRetryCount = 0;
           WiFi.mode(WIFI_STA);
-          
-          // Clear any previous scan results to ensure we get fresh ones
+
           WiFi.scanDelete();
-          
-          // Wait for any existing scan to settle if needed
+
           if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
             wifiScanStart = millis();
             wifiScanResults = -1;
             startAnimation(SCREEN_WIFI_SCANNING, -64);
           } else {
-            WiFi.disconnect(); 
-            vTaskDelay(pdMS_TO_TICKS(100)); // Yield to driver
-            WiFi.scanNetworks(true); // Async scan
+            WiFi.disconnect();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            WiFi.scanNetworks(true);
             wifiScanStart = millis();
             wifiScanResults = -1;
             startAnimation(SCREEN_WIFI_SCANNING, -64);
@@ -986,8 +911,8 @@ void loop() {
           wifiListIndex = 0;
           wifiListScroll = 0;
           startAnimation(SCREEN_WIFI_RESULTS, -64);
-        } else if (wifiScanResults == -2) { // Failed
-           // Retry once or show no networks
+        } else if (wifiScanResults == -2) {
+
            wifiScanResults = 0;
            startAnimation(SCREEN_WIFI_RESULTS, -64);
         } else if (millis() - wifiScanStart > 10000) {
@@ -1001,111 +926,108 @@ void loop() {
     }
 
     else if (currentScreen == SCREEN_POWER_MODE) {
-      if (buttonJustPressed[0]) powerModeButtonCursor = -1; // back arrow
-      if (buttonJustPressed[1] && powerModeButtonCursor == -1) powerModeButtonCursor = 2; // to NO
-      if (buttonJustPressed[2]) { // LEFT
+      if (buttonJustPressed[0]) powerModeButtonCursor = -1;
+      if (buttonJustPressed[1] && powerModeButtonCursor == -1) powerModeButtonCursor = 2;
+      if (buttonJustPressed[2]) {
         if (powerModeButtonCursor > 0) powerModeButtonCursor--;
       }
-      if (buttonJustPressed[3]) { // RIGHT
+      if (buttonJustPressed[3]) {
         if (powerModeButtonCursor < 2) powerModeButtonCursor++;
       }
-      if (buttonJustPressed[4]) { // CENTER (Click)
+      if (buttonJustPressed[4]) {
         if (powerModeButtonCursor == -1) {
           startAnimation(SCREEN_POWER_HOME, 64);
-        } else if (powerModeButtonCursor == 0) { // Yes - Enable Eco
+        } else if (powerModeButtonCursor == 0) {
           currentPowerMode = POWER_ECO;
           ecoModeActive = true;
-          // Save Eco mode state to preferences
+
           prefs.begin("powermode", false);
           prefs.putBool("ecoMode", true);
           prefs.end();
           ecoModeSleepStart = millis();
           startAnimation(SCREEN_WATCHFACE, 64);
-        } else if (powerModeButtonCursor == 1) { // Help
+        } else if (powerModeButtonCursor == 1) {
           startAnimation(SCREEN_POWER_MODE_HELP, -64);
-        } else if (powerModeButtonCursor == 2) { // No - Stay Normal
+        } else if (powerModeButtonCursor == 2) {
           startAnimation(SCREEN_POWER_HOME, 64);
         }
       }
     }
 
     else if (currentScreen == SCREEN_POWER_MODE_HELP) {
-      if (buttonJustPressed[4]) { // CENTER (Click)
-        startAnimation(SCREEN_POWER_MODE, 64); // Go back to power mode selection
+      if (buttonJustPressed[4]) {
+        startAnimation(SCREEN_POWER_MODE, 64);
       }
     }
 
     else if (currentScreen == SCREEN_ECO_EXIT_CONFIRM) {
-      if (buttonJustPressed[0]) { // UP -> Back
+      if (buttonJustPressed[0]) {
         if (ecoExitConfirmCursor != -1) ecoExitConfirmCursor = -1;
       }
-      if (buttonJustPressed[1]) { // DOWN -> to buttons
-        if (ecoExitConfirmCursor == -1) ecoExitConfirmCursor = 1; // Default to No
+      if (buttonJustPressed[1]) {
+        if (ecoExitConfirmCursor == -1) ecoExitConfirmCursor = 1;
       }
-      if (buttonJustPressed[2]) { // LEFT -> Yes
+      if (buttonJustPressed[2]) {
         if (ecoExitConfirmCursor != -1) ecoExitConfirmCursor = 0;
       }
-      if (buttonJustPressed[3]) { // RIGHT -> No
+      if (buttonJustPressed[3]) {
         if (ecoExitConfirmCursor != -1) ecoExitConfirmCursor = 1;
       }
-      if (buttonJustPressed[4]) { // CENTER (Click)
-        if (ecoExitConfirmCursor == -1) { // Back
+      if (buttonJustPressed[4]) {
+        if (ecoExitConfirmCursor == -1) {
           startAnimation(SCREEN_WATCHFACE, 64);
-        } else if (ecoExitConfirmCursor == 0) { // Yes
-          // Exit Eco Mode
+        } else if (ecoExitConfirmCursor == 0) {
+
           currentPowerMode = POWER_NORMAL;
           ecoModeActive = false;
-          // Save Eco mode state to preferences
+
           prefs.begin("powermode", false);
           prefs.putBool("ecoMode", false);
           prefs.end();
           ecoExitPressStart = 0;
           startAnimation(SCREEN_WATCHFACE, 64);
-        } else if (ecoExitConfirmCursor == 1) { // No
+        } else if (ecoExitConfirmCursor == 1) {
           startAnimation(SCREEN_WATCHFACE, 64);
         }
       }
     }
 
-    // =========================================
-    // AI CHATBOT NAVIGATION
-    // =========================================
     else if (currentScreen == SCREEN_AI_CHAT) {
       if (aiScrollMode) {
-        // SCROLL MODE: UP/DOWN scroll, CENTER exits
-        if (buttonJustPressed[0]) { 
+
+        if (buttonJustPressed[0]) {
           if (aiChatScroll > 0) { aiChatScroll--; aiUpdateCache(); }
         }
-        if (buttonJustPressed[1]) { 
+        if (buttonJustPressed[1]) {
           if (aiChatScroll < aiMsgCount - 1) { aiChatScroll++; aiUpdateCache(); }
         }
         if (buttonJustPressed[4]) { aiScrollMode = false; }
       } else {
-        // NAV MODE
-        if (buttonJustPressed[0]) { // UP
-          if (aiCursor == 0) aiCursor = -2; // chat -> back
-          else if (aiCursor == 1 || aiCursor == 2) aiCursor = 0; // input/send -> chat
+
+        if (buttonJustPressed[0]) {
+          if (aiCursor == 0) aiCursor = -2;
+          else if (aiCursor == 1 || aiCursor == 2) aiCursor = 0;
         }
-        if (buttonJustPressed[1]) { // DOWN
-          if (aiCursor == -2 || aiCursor == -1) aiCursor = 0; // header -> chat
-          else if (aiCursor == 0) aiCursor = 1; // chat -> input
+        if (buttonJustPressed[1]) {
+          if (aiCursor == -2 || aiCursor == -1) aiCursor = 0;
+          else if (aiCursor == 0) aiCursor = 1;
         }
-        if (buttonJustPressed[2]) { // LEFT
-          if (aiCursor == -1) aiCursor = -2; // C -> back
-          else if (aiCursor == 2) aiCursor = 1; // send -> input
+        if (buttonJustPressed[2]) {
+          if (aiCursor == -1) aiCursor = -2;
+          else if (aiCursor == 2) aiCursor = 1;
         }
-        if (buttonJustPressed[3]) { // RIGHT
-          if (aiCursor == -2) aiCursor = -1; // back -> C
-          else if (aiCursor == 1) aiCursor = 2; // input -> send
+        if (buttonJustPressed[3]) {
+          if (aiCursor == -2) aiCursor = -1;
+          else if (aiCursor == 1) aiCursor = 2;
         }
-        if (buttonJustPressed[4]) { // CENTER
-          if (aiCursor == -2) { // Back
+        if (buttonJustPressed[4]) {
+          if (aiCursor == -2) {
             startAnimation(SCREEN_MENU, 64);
-          } else if (aiCursor == -1) { // Clear
+          } else if (aiCursor == -1) {
             aiClearChat();
-          } else if (aiCursor == 0) { // Enter scroll mode
+          } else if (aiCursor == 0) {
             aiScrollMode = true;
-          } else if (aiCursor == 1) { // Open keyboard
+          } else if (aiCursor == 1) {
             kbInputBuffer = aiInputText;
             kbTextCursor = kbInputBuffer.length();
             kbScrollOffset = 0;
@@ -1113,13 +1035,13 @@ void loop() {
             kbCursorRow = 0; kbCursorCol = 0;
             currentKBMode = KB_LOWER;
             currentScreen = SCREEN_WIFI_KEYBOARD;
-          } else if (aiCursor == 2) { // Send
+          } else if (aiCursor == 2) {
             if (aiInputText.length() > 0) {
               if (WiFi.status() != WL_CONNECTED) {
                 aiAddMessage("A:WiFi not connected");
                 aiChatScroll = max(0, aiMsgCount - 4);
               } else if (aiMsgCount >= AI_MAX_MESSAGES) {
-                // Chat full
+
               } else {
                 aiAddMessage("U:" + aiInputText);
                 aiInputText = "";
@@ -1129,7 +1051,7 @@ void loop() {
                 aiResponseError = false;
                 aiChatScroll = max(0, aiMsgCount - 4);
                 aiUpdateCache();
-                // Launch API task
+
                 xTaskCreate(aiSendTask, "AISend", 8192, NULL, 1, NULL);
                 startAnimation(SCREEN_AI_THINKING, -64);
               }
@@ -1139,7 +1061,7 @@ void loop() {
       }
     }
     else if (currentScreen == SCREEN_AI_THINKING) {
-      // No user input during thinking - just wait for polling
+
     }
 
     else if (currentScreen == SCREEN_WIFI_RESULTS) {
@@ -1147,31 +1069,31 @@ void loop() {
       if (buttonJustPressed[1]) { if (wifiListIndex < wifiScanResults - 1) wifiListIndex++; }
       if (buttonJustPressed[2]) { if (wifiListIndex == -1) wifiListIndex = 0; }
       if (buttonJustPressed[4]) {
-        if (wifiListIndex == -1) { 
-          WiFi.disconnect(); 
-          startAnimation(SCREEN_RADIO, 64); 
+        if (wifiListIndex == -1) {
+          WiFi.disconnect();
+          startAnimation(SCREEN_RADIO, 64);
         }
         else {
           wifiTargetSSID = WiFi.SSID(wifiListIndex);
           wifiPassword   = findSavedPwd(wifiTargetSSID);
           kbInputBuffer  = wifiPassword;
           wifiStatusMsg  = "";
-          wifiRetryCount = 0; // Reset for new network selection
-          wifiPasswordCursor = -1; // Default to <-- on enter
+          wifiRetryCount = 0;
+          wifiPasswordCursor = -1;
           startAnimation(SCREEN_WIFI_PASSWORD, -64);
         }
       }
     }
     else if (currentScreen == SCREEN_WIFI_PASSWORD) {
-      // NAV GRAPH: <-- (up) <=> Keyboard (down/left) <=> Connect (right)
-      if (buttonJustPressed[0]) { 
-        if (wifiPasswordCursor == 0 || wifiPasswordCursor == 1) wifiPasswordCursor = -1; 
+
+      if (buttonJustPressed[0]) {
+        if (wifiPasswordCursor == 0 || wifiPasswordCursor == 1) wifiPasswordCursor = -1;
       }
-      if (buttonJustPressed[1]) { 
-        if (wifiPasswordCursor == -1) wifiPasswordCursor = 0; 
+      if (buttonJustPressed[1]) {
+        if (wifiPasswordCursor == -1) wifiPasswordCursor = 0;
       }
-      if (buttonJustPressed[2]) { 
-        if (wifiPasswordCursor == 1) wifiPasswordCursor = 0; 
+      if (buttonJustPressed[2]) {
+        if (wifiPasswordCursor == 1) wifiPasswordCursor = 0;
       }
       if (buttonJustPressed[3]) {
         if (wifiPasswordCursor == 0) wifiPasswordCursor = 1;
@@ -1195,7 +1117,7 @@ void loop() {
           wifiStatusMsg = "Connecting...";
         }
       }
-      
+
       if (wifiConnecting) {
         lastActivityTime = millis();
         if (WiFi.status() == WL_CONNECTED) {
@@ -1214,7 +1136,7 @@ void loop() {
           if (wifiRetryCount >= 5) wifiStatusMsg = "Check signal/pass";
           else wifiStatusMsg = "Failed! Wrong PW?";
         } else if (millis() - wifiConnectStartTime > 15000) {
-          // 15-second timeout (like cyberdeck)
+
           wifiConnecting = false;
           wifiRetryCount++;
           WiFi.disconnect();
@@ -1225,7 +1147,7 @@ void loop() {
     }
     else if (currentScreen == SCREEN_WIFI_KEYBOARD) {
       if (buttonJustPressed[0]) { if (kbCursorRow > 0) kbCursorRow--; }
-      if (buttonJustPressed[1]) { if (kbCursorRow < 3) kbCursorRow++; } // 4 rows
+      if (buttonJustPressed[1]) { if (kbCursorRow < 3) kbCursorRow++; }
       if (buttonJustPressed[2]) { if (kbCursorCol > 0) kbCursorCol--; else { kbCursorCol = 10; if (kbCursorRow > 0) kbCursorRow--; } }
       if (buttonJustPressed[3]) { if (kbCursorCol < 10) kbCursorCol++; else { kbCursorCol = 0; if (kbCursorRow < 3) kbCursorRow++; } }
       if (buttonJustPressed[4]) {
@@ -1233,31 +1155,31 @@ void loop() {
         if (currentKBMode == KB_UPPER) key = kbUpper[kbCursorRow][kbCursorCol];
         else if (currentKBMode == KB_SYMBOL) key = kbSymbol[kbCursorRow][kbCursorCol];
         else key = kbLower[kbCursorRow][kbCursorCol];
-        
-        if (strcmp(key, "EN") == 0) { 
+
+        if (strcmp(key, "EN") == 0) {
           if (kbReturnScreen == SCREEN_RADIO_BLE) {
             bleConfirmMode = 0; bleConfirmCursor = 0;
-            currentScreen = SCREEN_RADIO_BLE_CONFIRM; 
+            currentScreen = SCREEN_RADIO_BLE_CONFIRM;
           } else if (kbReturnScreen == SCREEN_AI_CHAT) {
             aiInputText = kbInputBuffer;
             if (aiInputText.length() > 128) aiInputText = aiInputText.substring(0, 128);
             currentScreen = SCREEN_AI_CHAT;
           } else {
-            wifiPassword = kbInputBuffer; 
-            currentScreen = kbReturnScreen; 
+            wifiPassword = kbInputBuffer;
+            currentScreen = kbReturnScreen;
           }
         }
-        else if (strcmp(key, "CL") == 0) { // Cursor Left
-           if (kbTextCursor > 0) kbTextCursor--; 
+        else if (strcmp(key, "CL") == 0) {
+           if (kbTextCursor > 0) kbTextCursor--;
         }
-        else if (strcmp(key, "CR") == 0) { // Cursor Right
-           if (kbTextCursor < (int)kbInputBuffer.length()) kbTextCursor++; 
+        else if (strcmp(key, "CR") == 0) {
+           if (kbTextCursor < (int)kbInputBuffer.length()) kbTextCursor++;
         }
-        else if (strcmp(key, "BS") == 0) { // Backspace
+        else if (strcmp(key, "BS") == 0) {
            if (kbTextCursor > 0 && kbInputBuffer.length() > 0) {
              kbInputBuffer.remove(kbTextCursor - 1, 1);
              kbTextCursor--;
-           } 
+           }
         }
         else if (strcmp(key, "^") == 0) {
           if (currentKBMode == KB_LOWER) currentKBMode = KB_UPPER;
@@ -1277,13 +1199,13 @@ void loop() {
       if (buttonJustPressed[4]) {
         if (wifiHomeCursor == -1) startAnimation(SCREEN_RADIO, 64);
         else if (wifiHomeCursor == 0) { wifiToggleCursor = 1; startAnimation(SCREEN_WIFI_TOGGLE_CONFIRM, -64); }
-        else if (wifiHomeCursor == 1) { 
-          if (WiFi.status() == WL_CONNECTED) { 
-            ntpSyncStart = millis(); 
+        else if (wifiHomeCursor == 1) {
+          if (WiFi.status() == WL_CONNECTED) {
+            ntpSyncStart = millis();
             ntpSyncState = 0;
             configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
             startAnimation(SCREEN_WIFI_NTP, -64);
-          } 
+          }
         }
         else if (wifiHomeCursor == 2) { forgetCredential(WiFi.SSID()); WiFi.disconnect(); startAnimation(SCREEN_RADIO, 64); }
       }
@@ -1292,10 +1214,10 @@ void loop() {
       if (buttonJustPressed[2]) wifiToggleCursor = 0;
       if (buttonJustPressed[3]) wifiToggleCursor = 1;
       if (buttonJustPressed[4]) {
-        if (wifiToggleCursor == 0) { 
-          wifiEnabled = false; 
-          WiFi.disconnect(); 
-          WiFi.mode(WIFI_OFF); 
+        if (wifiToggleCursor == 0) {
+          wifiEnabled = false;
+          WiFi.disconnect();
+          WiFi.mode(WIFI_OFF);
         }
         startAnimation(SCREEN_RADIO, 64);
       }
@@ -1304,7 +1226,6 @@ void loop() {
       if (buttonJustPressed[4]) startAnimation(SCREEN_RADIO, 64);
     }
 
-    // Update status animation index periodically
     static unsigned long lastStatusUpdate = 0;
     if (millis() - lastStatusUpdate > 100) {
       statusIndex++;
@@ -1313,8 +1234,8 @@ void loop() {
 
     updateDisplay();
   }
-  
-  delay(5); // Fast UI loop
+
+  delay(5);
 }
 void startAnimation(ScreenState next, int targetOffset) {
   isAnimating = true;
@@ -1325,20 +1246,20 @@ void startAnimation(ScreenState next, int targetOffset) {
 
 void updateDisplay() {
   display.clearDisplay();
-  
+
   if (isAnimating) {
-    // Determine screen pair based on targetOffset
-    if (animTargetY < 0) { // Sliding up
-      drawScreen(currentScreen, animOffsetY); // Moves up (negative offset)
-      drawScreen(animNextScreen, animOffsetY + 64); // Comes from below
-    } else { // Sliding down
-      drawScreen(currentScreen, animOffsetY); // Moves down (positive offset)
-      drawScreen(animNextScreen, animOffsetY - 64); // Comes from above
+
+    if (animTargetY < 0) {
+      drawScreen(currentScreen, animOffsetY);
+      drawScreen(animNextScreen, animOffsetY + 64);
+    } else {
+      drawScreen(currentScreen, animOffsetY);
+      drawScreen(animNextScreen, animOffsetY - 64);
     }
   } else {
     drawScreen(currentScreen, 0);
   }
-  
+
   display.display();
 }
 
@@ -1372,13 +1293,12 @@ void drawScreen(ScreenState screen, int yOffset) {
 }
 
 void drawHeader(int yOffset, const char* appName, bool backFocused) {
-  // Always draw the status bar separating line at the top
+
   display.drawFastHLine(0, 12 + yOffset, 128, SSD1306_WHITE);
 
-  int currentIconX = (appName == nullptr) ? 4 : 28; // Dynamic placement
+  int currentIconX = (appName == nullptr) ? 4 : 28;
   int iconY = 2 + yOffset;
 
-  // Draw WiFi icon if connected (only on Home and Menu)
   if (WiFi.status() == WL_CONNECTED && (currentScreen == SCREEN_WATCHFACE || currentScreen == SCREEN_MENU)) {
     display.drawPixel(currentIconX+3, iconY+6, SSD1306_WHITE);
     display.drawPixel(currentIconX+4, iconY+6, SSD1306_WHITE);
@@ -1392,22 +1312,20 @@ void drawHeader(int yOffset, const char* appName, bool backFocused) {
     display.drawPixel(currentIconX+5, iconY+0, SSD1306_WHITE);
     display.drawPixel(currentIconX+6, iconY+1, SSD1306_WHITE);
     display.drawPixel(currentIconX+7, iconY+2, SSD1306_WHITE);
-    
-    // Draw Internet signal bars icon if internet is OK (right next to WiFi)
+
     if (internetOK) {
-      int tx = currentIconX + 11; // 11px to the right of wifi
+      int tx = currentIconX + 11;
       int ty = iconY;
       display.drawFastVLine(tx + 0, ty + 6, 2, SSD1306_WHITE);
       display.drawFastVLine(tx + 2, ty + 4, 4, SSD1306_WHITE);
       display.drawFastVLine(tx + 4, ty + 2, 6, SSD1306_WHITE);
       display.drawFastVLine(tx + 6, ty + 0, 8, SSD1306_WHITE);
-      currentIconX += 20; // Move global cursor for next icons
+      currentIconX += 20;
     } else {
       currentIconX += 11;
     }
   }
 
-  // Draw Bluetooth icon if connected
   if (bleConnected && (currentScreen == SCREEN_WATCHFACE || currentScreen == SCREEN_MENU)) {
     display.drawFastVLine(currentIconX + 3, iconY + 0, 9, SSD1306_WHITE);
     display.drawLine(currentIconX + 1, iconY + 2, currentIconX + 5, iconY + 6, SSD1306_WHITE);
@@ -1418,24 +1336,21 @@ void drawHeader(int yOffset, const char* appName, bool backFocused) {
 
   if (appName != nullptr) {
     display.setTextSize(1);
-    
-    // Left arrow highlight
+
     if (backFocused) {
       display.fillRect(0, yOffset, 24, 12, SSD1306_WHITE);
       display.setTextColor(SSD1306_BLACK);
     } else {
       display.setTextColor(SSD1306_WHITE);
     }
-    
-    // Left arrow <--
+
     display.setCursor(2, 2 + yOffset);
     display.print("<--");
-    
-    // App Name
+
     display.setTextColor(SSD1306_WHITE);
     int16_t x1, y1; uint16_t w, h;
     display.getTextBounds(appName, 0, 0, &x1, &y1, &w, &h);
-    // Vertical center in 0-12 area: (12-h)/2 - y1
+
     display.setCursor((128 - w) / 2 - x1, 12/2 - h/2 - y1 + yOffset);
     display.print(appName);
   } else {
@@ -1448,36 +1363,31 @@ void drawHeader(int yOffset, const char* appName, bool backFocused) {
 }
 
 void drawWatchFace(int yOffset) {
-  // Draw top line (status separator) like cyberdeck at y=12
+
   drawHeader(yOffset);
-  
+
   DateTime now = rtc.now();
   uint16_t hour = now.hour();
   bool isPM = hour >= 12;
   if (hour > 12) hour -= 12;
   else if (hour == 0) hour = 12;
-  
-  // Cyberdeck clock formatting
+
   char timeBuf[6];
   sprintf(timeBuf, "%02d:%02d", hour, now.minute());
   display.setTextSize(4);
   display.setTextColor(SSD1306_WHITE);
   int16_t x1, y1; uint16_t w, h;
   display.getTextBounds(timeBuf, 0, 0, &x1, &y1, &w, &h);
-  
-  // Precise centering math for visual symmetry in the 12-56 region (height 44)
-  // Available Area: y=13 to y=55 (43 pixels)
+
   int16_t xPos = (128 - w + 1) / 2 - x1;
-  int16_t yPos = 13 + (43 - h + 1) / 2 - y1 + yOffset; 
+  int16_t yPos = 13 + (43 - h + 1) / 2 - y1 + yOffset;
   display.setCursor(xPos, yPos);
   display.print(timeBuf);
-  
-  // Cyberdeck AM/PM formatting
+
   display.setTextSize(1);
   display.setCursor(128 - 14, 56 + yOffset);
   display.print(isPM ? "PM" : "AM");
-  
-  // Cyberdeck Date formatting
+
   display.setCursor(0, 56 + yOffset);
   const char* days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
   char dateBuf[16];
@@ -1487,27 +1397,26 @@ void drawWatchFace(int yOffset) {
 
 void drawMenu(int yOffset) {
   drawHeader(yOffset);
-  
+
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  
+
   int itemH = 12;
   int listY = 16 + yOffset;
-  
-  // Scrolling logic: only show 4 items at a time
+
   int startIdx = (menuIndex < 4) ? 0 : menuIndex - 3;
   int endIdx = min(startIdx + 4, (int)NUM_MENU_ITEMS);
 
   for (int i = startIdx; i < endIdx; i++) {
     int y = listY + ((i - startIdx) * itemH);
-    
+
     if (i == menuIndex) {
       display.fillRect(0, y-1, 128, itemH, SSD1306_WHITE);
       display.setTextColor(SSD1306_BLACK);
     } else {
       display.setTextColor(SSD1306_WHITE);
     }
-    
+
     display.setCursor(4, y);
     display.print(menuItems[i]);
   }
@@ -1515,21 +1424,17 @@ void drawMenu(int yOffset) {
 
 void drawStopwatch(int yOffset) {
   drawHeader(yOffset, "STOPWATCH", (swFocus == 0));
-  
-  // Back arrow is now handled by drawHeader
-  
-  // Calculate display time
+
   unsigned long currentTotal = swElapsedTime;
   if (swRunning) {
     currentTotal += millis() - swStartTime;
   }
-  
-  unsigned long ms = (currentTotal % 1000) / 10; // 0-99
+
+  unsigned long ms = (currentTotal % 1000) / 10;
   unsigned long totalSecs = currentTotal / 1000;
   unsigned long m = totalSecs / 60;
   unsigned long s = totalSecs % 60;
-  
-  // MM:SS centered, size 3
+
   char timeStr[10];
   sprintf(timeStr, "%02lu:%02lu", m, s);
   display.setTextSize(3);
@@ -1540,25 +1445,21 @@ void drawStopwatch(int yOffset) {
   int16_t yPos = 10 + (42 - h) / 2 - y1 + yOffset;
   display.setCursor(xPos, yPos);
   display.print(timeStr);
-  
-  // Small MS moved down to avoid separator overlap
+
   char msStr[4];
   sprintf(msStr, "%02lu", ms);
   display.setTextSize(1);
   display.setCursor(SCREEN_WIDTH - 16, 16 + yOffset);
   display.print(msStr);
-  
-  // Bottom buttons with centered focus boxes
+
   display.setTextSize(1);
-  
-  // START/PAUSE (left side)
+
   const char* leftBtn = swRunning ? "PAUSE" : "START";
   int16_t lx1, ly1; uint16_t lw, lh;
   display.getTextBounds(leftBtn, 0, 0, &lx1, &ly1, &lw, &lh);
-  int leftBtnX = (64 - (lw + 8)) / 2; 
+  int leftBtnX = (64 - (lw + 8)) / 2;
   drawBoxedCenteredText(display, leftBtn, leftBtnX, SCREEN_HEIGHT - 12 + yOffset, lw + 8, 11, (swFocus == 1));
-  
-  // STOP/RESET (right side)
+
   const char* rightBtn = swRunning ? "STOP" : "RESET";
   int16_t rx1, ry1; uint16_t rw, rh;
   display.getTextBounds(rightBtn, 0, 0, &rx1, &ry1, &rw, &rh);
@@ -1568,7 +1469,7 @@ void drawStopwatch(int yOffset) {
 
 void drawTimer(int yOffset) {
   drawHeader(yOffset, "TIMER", (tmFocus == 0));
-  
+
   char timeStr[10];
   sprintf(timeStr, "%02d:%02d:%02d", tmHours, tmMinutes, tmSeconds);
   if (tmMode == TM_RUNNING) {
@@ -1576,31 +1477,28 @@ void drawTimer(int yOffset) {
     sprintf(timeStr, "%02lu:%02lu:%02lu", secs / 3600, (secs % 3600) / 60, secs % 60);
   }
 
-  // Main display: HH:MM:SS centered in upper content area
   display.setTextSize(2);
   int16_t x1, y1; uint16_t w, h;
   display.getTextBounds(timeStr, 0, 0, &x1, &y1, &w, &h);
   int16_t tx = (128 - w) / 2 - x1;
   int16_t ty = 16 + (28 - h) / 2 - y1 + yOffset;
-  
+
   display.setCursor(tx, ty);
   display.print(timeStr);
 
-  // Indicators for which unit is being edited
   if (tmMode == TM_SETTING) {
-    int charW = 12; // approx spacing for size 2
-    int16_t unitX = tx + (tmActiveUnit * 3 * charW); 
+    int charW = 12;
+    int16_t unitX = tx + (tmActiveUnit * 3 * charW);
     display.drawFastHLine(unitX, ty + h + 2, 22, SSD1306_WHITE);
   }
 
-  // Draw buttons in bottom area
   if (tmMode == TM_SETTING) {
-    // [+] [SET] [-]
+
     drawBoxedCenteredText(display, "+", 10, 48 + yOffset, 20, 11, (tmFocus == 1));
     drawBoxedCenteredText(display, "SET", 44, 48 + yOffset, 40, 11, (tmFocus == 2));
     drawBoxedCenteredText(display, "-", 98, 48 + yOffset, 20, 11, (tmFocus == 3));
   } else if (tmMode == TM_READY || tmMode == TM_RUNNING) {
-    // [SET] [START/PAUSE]
+
     const char* mainBtn = (tmMode == TM_RUNNING) ? "RESET" : "START";
     drawBoxedCenteredText(display, "SET", 15, 48 + yOffset, 40, 11, (tmFocus == 1));
     drawBoxedCenteredText(display, mainBtn, 70, 48 + yOffset, 45, 11, (tmFocus == 3));
@@ -1609,66 +1507,54 @@ void drawTimer(int yOffset) {
 
 void drawTimerAlert(int yOffset) {
   bool isFlashOn = (millis() % 1000 < 500);
-  
+
   if (isFlashOn) {
-    // Inverted: White background, Black text
+
     display.fillRect(0, 0, 128, 64, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
   } else {
-    // Normal: Black background, White text
+
     display.setTextColor(SSD1306_WHITE);
   }
 
   drawCenteredText(display, "TIMER DONE", 15 + yOffset, 2);
   drawCenteredText(display, "Press any key", 40 + yOffset, 1);
-  
-  // Custom OK button that inverts relative to flash state
+
   int x = 51, y = 51 + yOffset, w = 26, h = 11;
   if (isFlashOn) {
-    // Background is white, so draw a black box with white text
+
     display.fillRect(x, y, w, h, SSD1306_BLACK);
     display.setTextColor(SSD1306_WHITE);
   } else {
-    // Background is black, so draw a white box with black text
+
     display.fillRect(x, y, w, h, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
   }
-  
-  // Center "OK" in the box manually for precision
+
   int16_t x1, y1; uint16_t tw, th;
   display.getTextBounds("OK", 0, 0, &x1, &y1, &tw, &th);
   display.setCursor(x + (w - tw) / 2 - x1, y + (h - th) / 2 - y1);
   display.print("OK");
-  
-  display.setTextColor(SSD1306_WHITE); // Reset for other draw calls
+
+  display.setTextColor(SSD1306_WHITE);
 }
 
-
-
-// FreeRTOS task for reading button inputs
 void buttonReadTask(void *pvParameters) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(50);  // 50ms interval
-  
+  const TickType_t xFrequency = pdMS_TO_TICKS(50);
+
   while (1) {
-    // Read all button states (LOW = pressed, HIGH = not pressed)
-    buttonStates[0] = !digitalRead(BTN_UP);     // Button 6 (UP)
-    buttonStates[1] = !digitalRead(BTN_DOWN);   // Button 9 (DOWN)
-    buttonStates[2] = !digitalRead(BTN_LEFT);   // Button 8 (LEFT)
-    buttonStates[3] = !digitalRead(BTN_RIGHT);  // Button 7 (RIGHT)
-    buttonStates[4] = !digitalRead(BTN_CENTER); // Button 10 (CENTER)
-    
-    // vTaskDelayUntil handles the interval
-    
-    // Delay for debouncing
+
+    buttonStates[0] = !digitalRead(BTN_UP);
+    buttonStates[1] = !digitalRead(BTN_DOWN);
+    buttonStates[2] = !digitalRead(BTN_LEFT);
+    buttonStates[3] = !digitalRead(BTN_RIGHT);
+    buttonStates[4] = !digitalRead(BTN_CENTER);
+
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
 
-// Print button states in format: 6: NO 9: NO ...
-// vTaskDelayUntil used in task
-
-// Helper function to draw centered text
 void drawCenteredText(Adafruit_SSD1306 &d, const String &text, int16_t y, uint8_t size) {
   int16_t x1, y1; uint16_t w, h;
   d.setTextSize(size);
@@ -1677,7 +1563,6 @@ void drawCenteredText(Adafruit_SSD1306 &d, const String &text, int16_t y, uint8_
   d.print(text);
 }
 
-// Draw text centered in a box
 void drawBoxedCenteredText(Adafruit_SSD1306 &d, const char* text, int x, int y, int w, int h, bool inverted) {
   int16_t x1, y1; uint16_t tw, th;
   d.setTextSize(1);
@@ -1694,14 +1579,10 @@ void drawBoxedCenteredText(Adafruit_SSD1306 &d, const char* text, int x, int y, 
   d.setTextColor(SSD1306_WHITE);
 }
 
-// ============================================================
-// RADIO APP HELPERS
-// ============================================================
-
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
       bleConnected = true;
-      bleRemoteDeviceName = "Connected"; 
+      bleRemoteDeviceName = "Connected";
     };
     void onDisconnect(BLEServer* pServer) {
       bleConnected = false;
@@ -1732,7 +1613,7 @@ void initBLE() {
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
   pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);  
+  pAdvertising->setMinPreferred(0x06);
   pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
 }
@@ -1755,13 +1636,12 @@ void loadCredentials() {
 }
 
 void saveCredential(String ssid, String pwd) {
-  // Update last connected SSID
+
   lastConnectedSSID = ssid;
   prefs.begin("powermode", false);
   prefs.putString("lastSSID", lastConnectedSSID);
   prefs.end();
 
-  // Check if already saved
   for (int i = 0; i < savedNetCount; i++) {
     if (savedSSIDs[i] == ssid) { savedPWDs[i] = pwd; goto writeAll; }
   }
@@ -1808,12 +1688,12 @@ String findSavedPwd(String ssid) {
 }
 
 void syncTimeWithNTP() {
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer); // async
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 }
 
 void internetPinger1(void *p) {
   for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; } 
+    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
       h.begin("http://www.gstatic.com/generate_204");
@@ -1824,7 +1704,7 @@ void internetPinger1(void *p) {
 }
 void internetPinger2(void *p) {
   for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; } 
+    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
       h.begin("http://clients3.google.com/generate_204");
@@ -1835,7 +1715,7 @@ void internetPinger2(void *p) {
 }
 void internetPinger3(void *p) {
   for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; } 
+    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
       h.begin("http://cp.cloudflare.com/generate_204");
@@ -1846,7 +1726,7 @@ void internetPinger3(void *p) {
 }
 void internetPinger4(void *p) {
   for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; } 
+    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
       h.begin("http://edge-http.microsoft.com/captiveportal/generate_204");
@@ -1857,7 +1737,7 @@ void internetPinger4(void *p) {
 }
 void internetPinger5(void *p) {
   for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; } 
+    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
       h.begin("http://connect.rom.miui.com/generate_204");
@@ -1884,10 +1764,6 @@ void startWifiPingers() {
   xTaskCreate(connectivityAggregator, "NetAgg", 2048, NULL, 2, NULL);
 }
 
-// ============================================================
-// RADIO DRAW FUNCTIONS
-// ============================================================
-
 void drawRadioHome(int yOffset) {
   drawHeader(yOffset, "RADIO", (radioCursor == -1));
   const char* opts[] = {"WiFi", "Bluetooth", "ESP-NOW", "Power Mode"};
@@ -1907,11 +1783,11 @@ void drawRadioHome(int yOffset) {
 }
 
 void drawRadioWifi(int yOffset) {
-  drawHeader(yOffset, "WiFi", (wifiConfirmCursor == -1)); 
+  drawHeader(yOffset, "WiFi", (wifiConfirmCursor == -1));
   display.setTextColor(SSD1306_WHITE);
   drawCenteredText(display, "WiFi is OFF", 22 + yOffset, 1);
   drawCenteredText(display, "Turn it on?", 33 + yOffset, 1);
-  // YES / NO
+
   drawBoxedCenteredText(display, "YES", 14, 48 + yOffset, 40, 13, (wifiConfirmCursor == 0));
   drawBoxedCenteredText(display, "NO",  74, 48 + yOffset, 40, 13, (wifiConfirmCursor == 1));
 }
@@ -1924,7 +1800,7 @@ void drawWifiScanning(int yOffset) {
   drawHeader(yOffset, "WiFi");
   display.setTextColor(SSD1306_WHITE);
   drawCenteredText(display, "SCANNING...", 30 + yOffset, 1);
-  // Animated dots
+
   int dots = ((millis() - wifiScanStart) / 500) % 4;
   String dotStr = "";
   for (int i = 0; i < dots; i++) dotStr += ".";
@@ -1939,9 +1815,9 @@ void drawWifiResults(int yOffset) {
     drawCenteredText(display, "No networks found", 30 + yOffset, 1);
     return;
   }
-  // Visible item area: y=16 to y=63, 12px each = 4 items
+
   const int visibleItems = 4;
-  // Keep scroll window tracking current selection
+
   if (wifiListIndex > -1) {
     if (wifiListIndex < wifiListScroll) wifiListScroll = wifiListIndex;
     if (wifiListIndex >= wifiListScroll + visibleItems) wifiListScroll = wifiListIndex - visibleItems + 1;
@@ -1962,7 +1838,7 @@ void drawWifiResults(int yOffset) {
     if (ssid.length() == 0) ssid = "(hidden)";
     if (ssid.length() > 17) ssid = ssid.substring(0, 16) + "~";
     display.print(ssid);
-    // RSSI strength indicator (right side using 1-3 block chars)
+
     int rssi = WiFi.RSSI(netIdx);
     int bars = (rssi > -60) ? 3 : (rssi > -75) ? 2 : 1;
     display.setTextColor(SSD1306_WHITE);
@@ -1971,7 +1847,7 @@ void drawWifiResults(int yOffset) {
   }
   display.setTextColor(SSD1306_WHITE);
   display.setTextWrap(true);
-  // Scrollbar on right edge
+
   if (wifiScanResults > visibleItems) {
     int trackH = 48;
     int sbH = max(4, (visibleItems * trackH) / wifiScanResults);
@@ -1985,13 +1861,13 @@ void drawWifiPassword(int yOffset) {
   drawHeader(yOffset, "WiFi", (wifiPasswordCursor == -1));
   display.setTextColor(SSD1306_WHITE);
   display.setTextWrap(false);
-  // SSID truncated
+
   display.setCursor(4, 16 + yOffset);
   String ssid = wifiTargetSSID;
   if (ssid.length() > 18) ssid = ssid.substring(0, 17) + "~";
   display.print(ssid);
   display.setTextWrap(true);
-  // Password box
+
   display.drawRect(4, 25 + yOffset, 120, 13, SSD1306_WHITE);
   display.setCursor(8, 28 + yOffset);
   String pw = wifiPassword;
@@ -1999,44 +1875,41 @@ void drawWifiPassword(int yOffset) {
   if (pw.length() == 0) { display.setTextColor(0xAAAA); display.print("[tap to enter]"); }
   else display.print(pw);
   display.setTextColor(SSD1306_WHITE);
-  // Status message
+
   if (wifiStatusMsg.length() > 0) {
     display.setCursor(4, 40 + yOffset);
     display.print(wifiStatusMsg);
   }
-  // Buttons
+
   drawBoxedCenteredText(display, "KEYBOARD", 4,  51 + yOffset, 54, 12, (wifiPasswordCursor == 0));
   drawBoxedCenteredText(display, "CONNECT",  62, 51 + yOffset, 60, 12, (wifiPasswordCursor == 1));
 }
 
 void drawWifiKeyboard() {
-  // Input bar (y=0..12)
+
   display.setTextColor(SSD1306_WHITE);
   display.drawRect(0, 0, 128, 12, SSD1306_WHITE);
   display.setCursor(4, 3);
-  
-  // Track scroll correctly so cursor stays on screen (max ~17 chars visible)
+
   if (kbTextCursor < kbScrollOffset) kbScrollOffset = kbTextCursor;
   if (kbTextCursor > kbScrollOffset + 17) kbScrollOffset = kbTextCursor - 17;
-  
+
   String disp = kbInputBuffer.substring(kbScrollOffset);
   if (disp.length() > 18) disp = disp.substring(0, 18);
-  
-  if (kbInputBuffer.length() == 0) { 
-    display.setTextColor(0x5555); display.print("Type password..."); 
+
+  if (kbInputBuffer.length() == 0) {
+    display.setTextColor(0x5555); display.print("Type password...");
     display.setTextColor(SSD1306_WHITE);
   } else {
     display.print(disp);
   }
-  
-  // Draw blinking cursor line
+
   if ((millis() / 500) % 2 == 0) {
     int cursorCharPos = kbTextCursor - kbScrollOffset;
-    int cursorPx = 4 + (cursorCharPos * 6); // roughly 6px per char (5x7 font + 1px gap)
+    int cursorPx = 4 + (cursorCharPos * 6);
     display.drawFastVLine(cursorPx, 2, 9, SSD1306_WHITE);
   }
 
-  // Keyboard rows (liquid layout to fill strictly bottom 50px area constraints)
   for (int r = 0; r < 4; r++) {
     for (int c = 0; c < 11; c++) {
       const char* key;
@@ -2044,12 +1917,11 @@ void drawWifiKeyboard() {
       else if (currentKBMode == KB_SYMBOL) key = kbSymbol[r][c];
       else key = kbLower[r][c];
 
-      // Exact pixel boundary distribution using rational fractions
       int x = (c * 128) / 11;
       int w = ((c + 1) * 128) / 11 - x;
       int y = 13 + (r * 51) / 4;
       int h = (13 + ((r + 1) * 51) / 4) - y;
-      
+
       drawBoxedCenteredText(display, key, x, y, w, h, (r == kbCursorRow && c == kbCursorCol));
     }
   }
@@ -2058,11 +1930,11 @@ void drawWifiKeyboard() {
 void drawRadioBleHome(int yOffset) {
   drawHeader(yOffset, "Bluetooth", (bleHomeCursor == -1));
   display.setTextColor(SSD1306_WHITE);
-  
+
   if (!bleConnected) {
     drawCenteredText(display, "Bluetooth ON", 18 + yOffset, 1);
     drawCenteredText(display, "Device not connected", 30 + yOffset, 1);
-    
+
     int okY = 48 + yOffset;
     bool okSelected = (bleHomeCursor == 0);
     if (okSelected) {
@@ -2075,15 +1947,14 @@ void drawRadioBleHome(int yOffset) {
     drawCenteredText(display, "OK", okY + 1, 1);
     display.setTextColor(SSD1306_WHITE);
   } else {
-    // Connected UI
+
     int startY = 16 + yOffset;
     display.setCursor(4, startY);
-    display.print("Device: "); 
+    display.print("Device: ");
     String remote = bleRemoteDeviceName;
     if (remote.length() > 9) remote = remote.substring(0, 8) + "..";
     display.print(remote);
-    
-    // Interactive rows
+
     for (int i = 0; i < 2; i++) {
       int rowY = 26 + (i * 12) + yOffset;
       if (bleHomeCursor == i) {
@@ -2092,7 +1963,7 @@ void drawRadioBleHome(int yOffset) {
       }
       display.setCursor(4, rowY);
       if (i == 0) {
-        display.print("Name: "); 
+        display.print("Name: ");
         String dn = bleDeviceName;
         if (dn.length() > 10) dn = dn.substring(0, 9) + "..";
         display.print(dn);
@@ -2107,16 +1978,15 @@ void drawRadioBleHome(int yOffset) {
 void drawBleConfirm(int yOffset) {
   drawHeader(yOffset, "Bluetooth", (bleConfirmCursor == -1));
   display.setTextColor(SSD1306_WHITE);
-  
+
   const char* msg = "";
   if (bleConfirmMode == 0) msg = "Change Name?";
   else if (bleConfirmMode == 1) msg = "Disconnect?";
   else if (bleConfirmMode == 2) msg = "Forget Device?";
   else if (bleConfirmMode == 3) msg = bleSettingAccess ? "Turn OFF access?" : "Turn ON access?";
-  
+
   drawCenteredText(display, msg, 22 + yOffset, 1);
-  
-  // Side-by-side YES / NO boxed buttons (same style as WiFi confirm)
+
   drawBoxedCenteredText(display, "YES", 10, 44 + yOffset, 46, 13, (bleConfirmCursor == 0));
   drawBoxedCenteredText(display, "NO",  72, 44 + yOffset, 46, 13, (bleConfirmCursor == 1));
 }
@@ -2125,7 +1995,7 @@ void drawWifiHome(int yOffset) {
   drawHeader(yOffset, "WiFi", (wifiHomeCursor == -1));
   display.setTextColor(SSD1306_WHITE);
   display.setTextWrap(false);
-  // Static lines
+
   display.setCursor(4, 16 + yOffset);
   display.print("Internet: "); display.print(internetOK ? "OK" : "OFFLINE");
   display.setCursor(4, 25 + yOffset);
@@ -2134,7 +2004,7 @@ void drawWifiHome(int yOffset) {
   if (ssid.length() > 12) ssid = ssid.substring(0, 11) + "~";
   display.print(ssid);
   display.setTextWrap(true);
-  // Interactive menu items
+
   const char* opts[] = {"WiFi: ON", "Sync Time", "Forget Network"};
   for (int i = 0; i < 3; i++) {
     int y = 36 + (i * 10) + yOffset;
@@ -2162,7 +2032,7 @@ void drawWifiToggleConfirm(int yOffset) {
 void drawWifiNTP(int yOffset) {
   drawHeader(yOffset, "WiFi NTP");
   display.setTextColor(SSD1306_WHITE);
-  
+
   if (ntpSyncState == 0) {
     drawCenteredText(display, "Syncing time...", 30 + yOffset, 1);
     int dots = ((millis() - ntpSyncStart) / 500) % 4;
@@ -2191,7 +2061,7 @@ void drawRadioStub(int yOffset, const char* name) {
 void drawPowerHome(int yOffset) {
   drawHeader(yOffset, "Power Mode", (powerHomeCursor == -1));
   display.setTextColor(SSD1306_WHITE);
-  
+
   const char* opts[] = {"WiFi Auto On:", "ESP-NOW Auto:", "Eco Mode"};
   for (int i = 0; i < 3; i++) {
     int y = 16 + (i * 12) + yOffset;
@@ -2203,8 +2073,7 @@ void drawPowerHome(int yOffset) {
     }
     display.setCursor(4, y);
     display.print(opts[i]);
-    
-    // Show YES/NO values for auto-on options
+
     if (i == 0) {
       display.setCursor(90, y);
       display.print(wifiAutoOn ? "YES" : "NO");
@@ -2221,17 +2090,17 @@ void drawWifiAutoConfirm(int yOffset) {
   display.setTextColor(SSD1306_WHITE);
   drawCenteredText(display, "Turn WiFi", 18 + yOffset, 1);
   drawCenteredText(display, "Auto On?", 29 + yOffset, 1);
-  
+
   drawBoxedCenteredText(display, "YES", 14, 48 + yOffset, 40, 13, (wifiConfirmCursor == 0));
   drawBoxedCenteredText(display, "NO",  74, 48 + yOffset, 40, 13, (wifiConfirmCursor == 1));
 }
 
 void drawEspNowAutoConfirm(int yOffset) {
-  drawHeader(yOffset, "Power Mode", (wifiConfirmCursor == -1)); // reusing cursor for simplicity
+  drawHeader(yOffset, "Power Mode", (wifiConfirmCursor == -1));
   display.setTextColor(SSD1306_WHITE);
   drawCenteredText(display, "Turn ESP-NOW", 18 + yOffset, 1);
   drawCenteredText(display, "Auto On?", 29 + yOffset, 1);
-  
+
   drawBoxedCenteredText(display, "YES", 14, 48 + yOffset, 40, 13, (wifiConfirmCursor == 0));
   drawBoxedCenteredText(display, "NO",  74, 48 + yOffset, 40, 13, (wifiConfirmCursor == 1));
 }
@@ -2241,7 +2110,7 @@ void drawPowerModeSelection(int yOffset) {
   display.setTextColor(SSD1306_WHITE);
   drawCenteredText(display, "Enable Eco", 22 + yOffset, 1);
   drawCenteredText(display, "mode?", 33 + yOffset, 1);
-  // YES / HELP / NO buttons
+
   drawBoxedCenteredText(display, "YES", 5, 48 + yOffset, 33, 13, (powerModeButtonCursor == 0));
   drawBoxedCenteredText(display, "HELP", 47, 48 + yOffset, 33, 13, (powerModeButtonCursor == 1));
   drawBoxedCenteredText(display, "NO", 89, 48 + yOffset, 33, 13, (powerModeButtonCursor == 2));
@@ -2250,8 +2119,7 @@ void drawPowerModeSelection(int yOffset) {
 void drawPowerModeHelp(int yOffset) {
   drawHeader(yOffset, "Power Mode", false);
   display.setTextColor(SSD1306_WHITE);
-  
-  // Display help text
+
   display.setCursor(4, 16 + yOffset);
   display.setTextSize(1);
   display.println("Eco Mode: Ultra low");
@@ -2260,7 +2128,7 @@ void drawPowerModeHelp(int yOffset) {
   display.println("time-only display");
   display.println("");
   display.println("Normal: Full features");
-  
+
   display.setTextColor(SSD1306_WHITE);
 }
 
@@ -2268,40 +2136,34 @@ void drawEcoExitConfirm(int yOffset) {
   drawHeader(yOffset, "Eco Mode", (ecoExitConfirmCursor == -1));
   display.setTextColor(SSD1306_WHITE);
   drawCenteredText(display, "Exit Eco Mode?", 22 + yOffset, 1);
-  // YES / NO
+
   drawBoxedCenteredText(display, "YES", 14, 48 + yOffset, 40, 13, (ecoExitConfirmCursor == 0));
   drawBoxedCenteredText(display, "NO",  74, 48 + yOffset, 40, 13, (ecoExitConfirmCursor == 1));
 }
 
 void wifiBackgroundTask(void *pvParameters) {
   for (;;) {
-    // Wait 10 seconds between checks as requested
+
     vTaskDelay(pdMS_TO_TICKS(10000));
 
-    // Only run if WiFi Auto On or Manual WiFi is enabled, and not in Eco Mode
     if ((wifiAutoOn || wifiEnabled) && !ecoModeActive) {
-      
-      // No need to run if already connected or if a scan/connection is currently in progress via UI
+
       if (WiFi.status() == WL_CONNECTED || wifiConnecting || WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
         continue;
       }
 
-      // Skip if we are currently in a critical WiFi or AI screen to avoid conflicts.
-      // We skip SCREEN_RADIO_WIFI and more to ensure manual scans/AI tasks are priority.
-      if (currentScreen == SCREEN_WIFI_SCANNING || currentScreen == SCREEN_WIFI_RESULTS || 
+      if (currentScreen == SCREEN_WIFI_SCANNING || currentScreen == SCREEN_WIFI_RESULTS ||
           currentScreen == SCREEN_WIFI_PASSWORD || currentScreen == SCREEN_WIFI_KEYBOARD ||
-          currentScreen == SCREEN_RADIO_WIFI || currentScreen == SCREEN_AI_CHAT || 
+          currentScreen == SCREEN_RADIO_WIFI || currentScreen == SCREEN_AI_CHAT ||
           currentScreen == SCREEN_AI_THINKING) {
         continue;
       }
 
-      // Ensure WiFi is in STA mode and turned on
       if (WiFi.getMode() != WIFI_STA) {
         WiFi.mode(WIFI_STA);
         vTaskDelay(pdMS_TO_TICKS(100));
       }
 
-      // Perform a scan to find available networks
       int n = WiFi.scanNetworks();
       if (n > 0) {
         int bestIdx = -1;
@@ -2310,34 +2172,32 @@ void wifiBackgroundTask(void *pvParameters) {
         for (int i = 0; i < n; i++) {
           String ssid = WiFi.SSID(i);
           String pwd = findSavedPwd(ssid);
-          
+
           if (pwd.length() > 0) {
-            // If this is the last connected SSID, we found our top priority
+
             if (lastConnectedSSID.length() > 0 && ssid == lastConnectedSSID) {
               bestIdx = i;
               lastFound = true;
-              break; 
+              break;
             }
-            // Otherwise, keep track of the first saved network we found
+
             if (bestIdx == -1) {
               bestIdx = i;
             }
           }
         }
 
-        // Connect if a saved network was found
         if (bestIdx != -1) {
           String targetSSID = WiFi.SSID(bestIdx);
           String targetPWD = findSavedPwd(targetSSID);
-          
+
           WiFi.begin(targetSSID.c_str(), targetPWD.c_str());
-          
-          // Wait up to 10 seconds for connection
+
           unsigned long start = millis();
           while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
             vTaskDelay(pdMS_TO_TICKS(500));
           }
-          
+
           if (WiFi.status() == WL_CONNECTED) {
             lastConnectedSSID = targetSSID;
             prefs.begin("powermode", false);
@@ -2351,10 +2211,6 @@ void wifiBackgroundTask(void *pvParameters) {
     }
   }
 }
-
-// ============================================================
-// AI CHATBOT HELPERS (LittleFS-backed)
-// ============================================================
 
 int aiCountMessages() {
   File f = LittleFS.open("/ai_chat.txt", "r");
@@ -2397,16 +2253,11 @@ String aiGetMessage(int index) {
   return "";
 }
 
-// ============================================================
-// AI CHATBOT DRAW FUNCTIONS
-// ============================================================
-
 void drawAiChat(int yOffset) {
-  // --- Header: <-- (left) | "AI Chatbot" (center) | C (right) ---
+
   display.drawFastHLine(0, 12 + yOffset, 128, SSD1306_WHITE);
   display.setTextSize(1);
 
-  // Back button <--
   if (aiCursor == -2) {
     display.fillRect(0, yOffset, 24, 12, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
@@ -2416,11 +2267,9 @@ void drawAiChat(int yOffset) {
   display.setCursor(2, 2 + yOffset);
   display.print("<--");
 
-  // Title "AI Chatbot" centered
   display.setTextColor(SSD1306_WHITE);
   drawCenteredText(display, "AI Chatbot", 2 + yOffset, 1);
 
-  // Clear button "C" right side
   if (aiCursor == -1) {
     display.fillRect(116, yOffset, 12, 12, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
@@ -2431,18 +2280,16 @@ void drawAiChat(int yOffset) {
   display.print("C");
   display.setTextColor(SSD1306_WHITE);
 
-  // --- Chat area: y=13 to y=50 (38px, ~4 lines of 9px) ---
   int chatY = 13 + yOffset;
   int chatH = 38;
   int lineH = 9;
-  int maxVisibleLines = chatH / lineH; // 4 lines
+  int maxVisibleLines = chatH / lineH;
 
-  // Highlight chat area if focused
   if (aiCursor == 0 && !aiScrollMode) {
     display.drawRect(0, chatY, 128, chatH, SSD1306_WHITE);
   }
   if (aiScrollMode) {
-    // Draw scroll indicator
+
     display.fillRect(124, chatY, 4, chatH, SSD1306_BLACK);
     if (aiMsgCount > 0) {
       int sbH = max(4, (maxVisibleLines * chatH) / max(1, aiMsgCount));
@@ -2451,34 +2298,31 @@ void drawAiChat(int yOffset) {
     }
   }
 
-  // Check for chat full message
   if (aiMsgCount >= AI_MAX_MESSAGES) {
     drawCenteredText(display, "Chat full!", chatY + 8, 1);
     drawCenteredText(display, "Press C to clear", chatY + 20, 1);
   } else if (aiMsgCount == 0) {
     drawCenteredText(display, "No messages yet", chatY + 14, 1);
   } else {
-    // Render messages from aiCache
+
     int drawY = chatY + 1;
     display.setTextWrap(false);
     for (int i = 0; i < 5 && (aiChatScroll + i) < aiMsgCount && drawY < chatY + chatH - 2; i++) {
       String msg = aiCache[i];
       if (msg.length() == 0) continue;
-      
+
       bool isUser = msg.startsWith("U:");
       String prefix = isUser ? "Me:" : "AI:";
       String content = msg.substring(2);
       String fullText = prefix + content;
-      
-      // Word-wrap and render
+
       int pos = 0;
       int maxChars = 21;
       bool firstLine = true;
       while (pos < (int)fullText.length() && drawY < chatY + chatH - 2) {
         int remaining = fullText.length() - pos;
         int lineLen = min(remaining, maxChars);
-        
-        // Word wrap: find last space
+
         if (remaining > maxChars) {
           int lastSpace = -1;
           for (int j = pos; j < pos + lineLen; j++) {
@@ -2486,21 +2330,19 @@ void drawAiChat(int yOffset) {
           }
           if (lastSpace > pos) lineLen = lastSpace - pos + 1;
         }
-        
+
         display.setCursor(2, drawY);
         display.print(fullText.substring(pos, pos + lineLen));
         pos += lineLen;
         drawY += lineH;
       }
-      drawY += 1; // Gap between messages
+      drawY += 1;
     }
     display.setTextWrap(true);
   }
 
-  // --- Bottom bar: input box + SEND button at y=52 ---
   int barY = 52 + yOffset;
 
-  // Input box
   if (aiCursor == 1) {
     display.fillRect(0, barY, 99, 12, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
@@ -2517,34 +2359,28 @@ void drawAiChat(int yOffset) {
     display.print(disp);
   }
 
-  // SEND button
   display.setTextColor(SSD1306_WHITE);
   drawBoxedCenteredText(display, "SEND", 101, barY, 27, 12, (aiCursor == 2));
 }
 
 void drawAiThinking(int yOffset) {
-  // Cleaner thinking screen without header
+
   display.setTextColor(SSD1306_WHITE);
   drawCenteredText(display, "AI Thinking", 26 + yOffset, 1);
-  
-  // Animated dots
+
   int dots = ((millis() - aiThinkStart) / 400) % 4;
   String dotStr = "";
   for (int i = 0; i < dots; i++) dotStr += ".";
   drawCenteredText(display, dotStr, 38 + yOffset, 1);
 }
 
-// ============================================================
-// AI CHATBOT API TASK
-// ============================================================
-
 void aiSendTask(void* param) {
-  // Build context from last 6 messages
+
   int contextCount = min(6, aiMsgCount);
   int startIdx = aiMsgCount - contextCount;
-  
+
   String messages = "[{\"role\":\"system\",\"content\":\"You are a helpful AI assistant on a smartwatch. Keep responses very short (under 100 chars) since the display is tiny (128x64 pixels). Be concise and direct.\"}";
-  
+
   for (int i = startIdx; i < aiMsgCount; i++) {
     String msg = aiGetMessage(i);
     if (msg.length() < 3) continue;
@@ -2556,14 +2392,14 @@ void aiSendTask(void* param) {
     messages += ",{\"role\":\"" + role + "\",\"content\":\"" + content + "\"}";
   }
   messages += "]";
-  
+
   String payload = "{\"model\":\"llama-3.3-70b-versatile\",\"messages\":" + messages + ",\"max_tokens\":150}";
-  
-  vTaskDelay(pdMS_TO_TICKS(500)); // Let WiFi settle
-  
+
+  vTaskDelay(pdMS_TO_TICKS(500));
+
   WiFiClientSecure client;
-  client.setInsecure(); // Skip cert verification for embedded
-  
+  client.setInsecure();
+
   HTTPClient http;
   http.setConnectTimeout(5000);
   http.setTimeout(7000);
@@ -2571,11 +2407,11 @@ void aiSendTask(void* param) {
   http.addHeader("Content-Type", "application/json");
   http.addHeader("User-Agent", "ESP32-Smartwatch/1.0");
   http.addHeader("Authorization", String("Bearer ") + GROQ_API_KEY);
-  
+
   int code = http.POST(payload);
   if (code == 200) {
     String response = http.getString();
-    // Parse choices[0].message.content
+
     int choicesIdx = response.indexOf("\"choices\"");
     if (choicesIdx != -1) {
       int contentIdx = response.indexOf("\"content\"", choicesIdx);
@@ -2602,18 +2438,18 @@ void aiSendTask(void* param) {
     }
     if (!aiResponseReady) aiResponseError = true;
   } else {
-    // Better error reporting: show the actual HTTP code
+
     aiResponse = "Error: " + String(code);
-    aiResponseReady = true; 
+    aiResponseReady = true;
   }
   http.end();
   vTaskDelete(NULL);
 }
 
 void aiUpdateCache() {
-  // Clear cache first
+
   for (int i = 0; i < 5; i++) aiCache[i] = "";
-  
+
   if (aiMsgCount == 0) return;
 
   File f = LittleFS.open("/ai_chat.txt", "r");
