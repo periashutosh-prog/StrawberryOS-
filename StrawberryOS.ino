@@ -1,3 +1,7 @@
+// StrawberryOS - A smartwatch OS for ESP32
+// Copyright (C) 2026 Ashutosh
+//
+// See the LICENSE file for more details.
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
@@ -8,10 +12,7 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include "time.h"
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+#include <NimBLEDevice.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <LittleFS.h>
@@ -48,15 +49,16 @@ enum ScreenState {
   SCREEN_POWER_MODE, SCREEN_POWER_MODE_HELP, SCREEN_ECO_EXIT_CONFIRM,
   SCREEN_WIFI_NTP,
 
-  SCREEN_AI_CHAT, SCREEN_AI_THINKING
+  SCREEN_AI_CHAT, SCREEN_AI_THINKING, SCREEN_AI_WIFI_ERROR,
+  SCREEN_CALCULATOR, SCREEN_CALCULATOR_SCI
 };
 ScreenState currentScreen = SCREEN_WATCHFACE;
 
 bool lastButtonStates[5] = {false, false, false, false, false};
 bool buttonJustPressed[5] = {false, false, false, false, false};
 
-const int NUM_MENU_ITEMS = 5;
-const char* menuItems[NUM_MENU_ITEMS] = {"Stopwatch", "Timer", "Radio", "AI Chat", "Lock"};
+const int NUM_MENU_ITEMS = 6;
+const char* menuItems[NUM_MENU_ITEMS] = {"Stopwatch", "Timer", "Radio", "AI Chat", "Calculator", "Lock"};
 int menuIndex = 0;
 
 unsigned long swStartTime = 0;
@@ -133,15 +135,34 @@ int kbTextCursor = 0;
 int kbScrollOffset = 0;
 ScreenState kbReturnScreen = SCREEN_WIFI_PASSWORD;
 
-BLEServer* pBleServer = NULL;
-BLECharacteristic* pBleNameCharacteristic = NULL;
-bool bleConnected = false;
+NimBLEServer* pBleServer = NULL;
+NimBLECharacteristic* pBleNameCharacteristic = NULL;
+NimBLECharacteristic* pPhoneNameCharacteristic = NULL;
+NimBLECharacteristic* pDisplayCharacteristic = NULL;
+NimBLECharacteristic* pMirrorControlCharacteristic = NULL;
+volatile bool bleConnected = false;
+volatile bool mirroringActive = false;
+unsigned long lastMirrorUpdate = 0;
+const int MIRROR_INTERVAL = 100; // 10 FPS
+String bleRemoteAddress = "";
 String bleDeviceName = "Ashutosh's Smartwatch";
 String bleRemoteDeviceName = "None";
 bool bleSettingAccess = false;
 int bleHomeCursor = 0;
 int bleConfirmMode = 0;
 int bleConfirmCursor = 0;
+bool bleDisconnecting = false;
+
+class PhoneNameCallbacks: public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            bleRemoteDeviceName = String(value.c_str());
+            Serial.print("Phone Name updated: ");
+            Serial.println(bleRemoteDeviceName);
+        }
+    }
+};
 
 Preferences prefs;
 const int MAX_SAVED_NETS = 5;
@@ -182,12 +203,41 @@ unsigned long aiThinkStart = 0;
 String aiResponse = "";
 volatile bool aiResponseReady = false;
 volatile bool aiResponseError = false;
+int aiWifiErrorType = 0;
+int aiWifiErrorCursor = 1;
 const char* GROQ_API_KEY = "GROQ_API_KEY";
 const int AI_MAX_MESSAGES = 500;
 String aiCache[5];
 int aiCacheScrollUsed = -1;
 
+// Calculator variables
+int calcCursorRow = 0, calcCursorCol = 0;
+String calcInput1 = "";
+String calcInput2 = "";
+char calcOp = ' ';
+bool calcIsOpSet = false;
+bool calcError = false;
+
+int calcSciRow = 0, calcSciCol = 0;
+
+// SCI functions grid: 3 rows x 2 cols
+const char* sciGrid[3][2] = {
+  {"x^2",  "sqrt"},
+  {"pi",   "x^3"},
+  {"cbrt", "BACK"}
+};
+
+const char* calcGrid[5][4] = {
+  {"7",   "8",  "9",   "/"},
+  {"4",   "5",  "6",   "*"},
+  {"1",   "2",  "3",   "-"},
+  {"0",   ".",  "+",   "="},
+  {"<--", "C",  "DEL", "SCI"}
+};
+
 void updateDisplay();
+void drawCalculator(int yOffset);
+void drawCalculatorSci(int yOffset);
 void drawScreen(ScreenState screen, int yOffset);
 void drawHeader(int yOffset, const char* appName = nullptr, bool backFocused = false);
 void drawWatchFace(int yOffset);
@@ -205,6 +255,7 @@ void aiClearChat();
 String aiGetMessage(int index);
 void drawAiChat(int yOffset);
 void drawAiThinking(int yOffset);
+void drawAiWifiError(int yOffset);
 void aiSendTask(void* param);
 void aiUpdateCache();
 void buttonReadTask(void *pvParameters);
@@ -420,20 +471,35 @@ void loop() {
       wifiListIndex = 0; wifiListScroll = 0;
       startAnimation(SCREEN_WIFI_RESULTS, -64);
       scanRetried = false;
+      if (pBleServer && pBleServer->getConnectedCount() == 0) {
+        NimBLEDevice::getAdvertising()->stop();
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if(!NimBLEDevice::getAdvertising()->isAdvertising()) { NimBLEDevice::getAdvertising()->start(); }
+      }
     } else if (result == WIFI_SCAN_FAILED) {
       if (!scanRetried) {
         scanRetried = true;
-        WiFi.scanNetworks(true, false, false, 80);
+        WiFi.scanNetworks(true, false, false, 80); // async scan
       } else {
         wifiScanResults = 0;
         startAnimation(SCREEN_WIFI_RESULTS, -64);
         scanRetried = false;
+        if (pBleServer && pBleServer->getConnectedCount() == 0) {
+          NimBLEDevice::getAdvertising()->stop();
+          vTaskDelay(pdMS_TO_TICKS(50));
+          if(!NimBLEDevice::getAdvertising()->isAdvertising()) { NimBLEDevice::getAdvertising()->start(); }
+        }
       }
     } else if (millis() - wifiScanStart > 8000) {
       WiFi.scanDelete();
       wifiScanResults = 0;
       startAnimation(SCREEN_WIFI_RESULTS, -64);
       scanRetried = false;
+      if (pBleServer && pBleServer->getConnectedCount() == 0) {
+        NimBLEDevice::getAdvertising()->stop();
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if(!NimBLEDevice::getAdvertising()->isAdvertising()) { NimBLEDevice::getAdvertising()->start(); }
+      }
     }
   }
 
@@ -542,8 +608,13 @@ void loop() {
           aiScrollMode = false;
           aiChatScroll = max(0, aiMsgCount - 4);
           aiUpdateCache();
+          WiFi.setSleep(false);
           startAnimation(SCREEN_AI_CHAT, -64);
         } else if (menuIndex == 4) {
+          calcCursorRow = 0; calcCursorCol = 0;
+          calcInput1 = ""; calcInput2 = ""; calcOp = ' '; calcIsOpSet = false; calcError = false;
+          startAnimation(SCREEN_CALCULATOR, -64);
+        } else if (menuIndex == 5) {
           startAnimation(SCREEN_WATCHFACE, 64);
         }
         }
@@ -751,7 +822,7 @@ void loop() {
             }
           }
           else { wifiConfirmCursor = 0; startAnimation(SCREEN_RADIO_WIFI, -64); }
-        } else if (radioCursor == 1) startAnimation(SCREEN_RADIO_BLE, -64);
+        } else if (radioCursor == 1) { bleHomeCursor = 0; startAnimation(SCREEN_RADIO_BLE, -64); }
         else if (radioCursor == 2) startAnimation(SCREEN_RADIO_ESPNOW, -64);
         else if (radioCursor == 3) {
           powerHomeCursor = 0;
@@ -811,14 +882,15 @@ void loop() {
       }
     }
     else if (currentScreen == SCREEN_RADIO_BLE) {
+      bool bleIsConn = bleConnected || (pBleServer && pBleServer->getConnectedCount() > 0);
       if (buttonJustPressed[0]) { if (bleHomeCursor > -1) bleHomeCursor--; }
       if (buttonJustPressed[1]) {
-        int maxCur = bleConnected ? 1 : 0;
+        int maxCur = bleIsConn ? 1 : 0;
         if (bleHomeCursor < maxCur) bleHomeCursor++;
       }
       if (buttonJustPressed[4]) {
         if (bleHomeCursor == -1) startAnimation(SCREEN_RADIO, 64);
-        else if (!bleConnected) {
+        else if (!bleIsConn) {
           startAnimation(SCREEN_RADIO, 64);
         } else {
           if (bleHomeCursor == 0) {
@@ -849,9 +921,16 @@ void loop() {
             bleDeviceName = kbInputBuffer;
             saveBleSettings();
 
-            BLEDevice::getAdvertising()->stop();
-            BLEDevice::getAdvertising()->setName(bleDeviceName.c_str());
-            BLEDevice::getAdvertising()->start();
+            NimBLEDevice::getAdvertising()->stop();
+            NimBLEAdvertisementData advData;
+            advData.setName(bleDeviceName.c_str());
+            advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+            NimBLEDevice::getAdvertising()->setAdvertisementData(advData);
+            
+            NimBLEAdvertisementData scanData;
+            scanData.setName(bleDeviceName.c_str());
+            NimBLEDevice::getAdvertising()->setScanResponseData(scanData);
+            NimBLEDevice::getAdvertising()->start();
           } else if (bleConfirmMode == 1 || bleConfirmMode == 2) {
 
             bleConnected = false;
@@ -861,9 +940,9 @@ void loop() {
               for (uint16_t i = 0; i < numClients; i++) {
                 pBleServer->disconnect(i);
               }
-              BLEDevice::getAdvertising()->stop();
-              delay(100);
-              BLEDevice::getAdvertising()->start();
+              NimBLEDevice::getAdvertising()->stop();
+              vTaskDelay(pdMS_TO_TICKS(100));
+              if(!NimBLEDevice::getAdvertising()->isAdvertising()) { NimBLEDevice::getAdvertising()->start(); }
             }
           } else if (bleConfirmMode == 3) {
             bleSettingAccess = !bleSettingAccess;
@@ -1022,6 +1101,7 @@ void loop() {
         }
         if (buttonJustPressed[4]) {
           if (aiCursor == -2) {
+            WiFi.setSleep(true);
             startAnimation(SCREEN_MENU, 64);
           } else if (aiCursor == -1) {
             aiClearChat();
@@ -1037,9 +1117,15 @@ void loop() {
             currentScreen = SCREEN_WIFI_KEYBOARD;
           } else if (aiCursor == 2) {
             if (aiInputText.length() > 0) {
-              if (WiFi.status() != WL_CONNECTED) {
-                aiAddMessage("A:WiFi not connected");
-                aiChatScroll = max(0, aiMsgCount - 4);
+              if (!wifiEnabled) {
+                aiWifiErrorType = 0; aiWifiErrorCursor = 1;
+                startAnimation(SCREEN_AI_WIFI_ERROR, -64);
+              } else if (WiFi.status() != WL_CONNECTED) {
+                aiWifiErrorType = 1; aiWifiErrorCursor = 1;
+                startAnimation(SCREEN_AI_WIFI_ERROR, -64);
+              } else if (!internetOK) {
+                aiWifiErrorType = 2; aiWifiErrorCursor = 1;
+                startAnimation(SCREEN_AI_WIFI_ERROR, -64);
               } else if (aiMsgCount >= AI_MAX_MESSAGES) {
 
               } else {
@@ -1052,7 +1138,7 @@ void loop() {
                 aiChatScroll = max(0, aiMsgCount - 4);
                 aiUpdateCache();
 
-                xTaskCreate(aiSendTask, "AISend", 8192, NULL, 1, NULL);
+                xTaskCreate(aiSendTask, "AISend", 12288, NULL, 1, NULL);
                 startAnimation(SCREEN_AI_THINKING, -64);
               }
             }
@@ -1062,6 +1148,154 @@ void loop() {
     }
     else if (currentScreen == SCREEN_AI_THINKING) {
 
+    }
+    else if (currentScreen == SCREEN_AI_WIFI_ERROR) {
+      if (buttonJustPressed[0]) { aiWifiErrorCursor = 0; }
+      if (buttonJustPressed[1]) { aiWifiErrorCursor = 1; }
+      if (buttonJustPressed[4]) {
+        startAnimation(SCREEN_AI_CHAT, 64);
+      }
+    }
+    else if (currentScreen == SCREEN_CALCULATOR) {
+      // Navigation: 5 rows x 4 cols, wrap around
+      if (buttonJustPressed[0]) calcCursorRow = (calcCursorRow > 0) ? calcCursorRow - 1 : 4;
+      if (buttonJustPressed[1]) calcCursorRow = (calcCursorRow < 4) ? calcCursorRow + 1 : 0;
+      if (buttonJustPressed[2]) {
+        calcCursorCol--;
+        if (calcCursorCol < 0) calcCursorCol = 3;
+      }
+      if (buttonJustPressed[3]) {
+        calcCursorCol++;
+        if (calcCursorCol > 3) calcCursorCol = 0;
+      }
+
+      if (buttonJustPressed[4]) {
+        const char* key = calcGrid[calcCursorRow][calcCursorCol];
+        String keyStr = String(key);
+
+        if (keyStr == "<--") {
+          calcInput1 = ""; calcInput2 = ""; calcOp = ' '; calcIsOpSet = false; calcError = false;
+          startAnimation(SCREEN_MENU, 64);
+
+        } else if (keyStr == "C") {
+          calcInput1 = ""; calcInput2 = ""; calcOp = ' '; calcIsOpSet = false; calcError = false;
+
+        } else if (keyStr == "DEL") {
+          if (calcError) { calcInput1 = ""; calcInput2 = ""; calcOp = ' '; calcIsOpSet = false; calcError = false; }
+          else if (calcIsOpSet) {
+            if (calcInput2.length() > 0) calcInput2.remove(calcInput2.length() - 1);
+            else { calcIsOpSet = false; calcOp = ' '; }
+          } else {
+            if (calcInput1.length() > 0) calcInput1.remove(calcInput1.length() - 1);
+          }
+
+        } else if (keyStr == "=") {
+          if (!calcError && calcIsOpSet && calcInput2.length() > 0) {
+            float v1 = calcInput1.toFloat(), v2 = calcInput2.toFloat(), res = 0;
+            bool dz = false;
+            if (calcOp=='+') res=v1+v2;
+            else if (calcOp=='-') res=v1-v2;
+            else if (calcOp=='*') res=v1*v2;
+            else if (calcOp=='/') { if (v2!=0) res=v1/v2; else dz=true; }
+            if (dz) { calcError = true; }
+            else {
+              calcInput1 = String(res, 4);
+              while (calcInput1.endsWith("0") && calcInput1.indexOf(".")!=-1) calcInput1.remove(calcInput1.length()-1);
+              if (calcInput1.endsWith(".")) calcInput1.remove(calcInput1.length()-1);
+              calcInput2 = ""; calcOp = ' '; calcIsOpSet = false;
+            }
+          }
+
+        } else if (keyStr=="+" || keyStr=="-" || keyStr=="*" || keyStr=="/") {
+          char op = key[0];
+          if (!calcError && calcInput1.length() > 0) {
+            if (calcIsOpSet && calcInput2.length() > 0) {
+              float v1=calcInput1.toFloat(), v2=calcInput2.toFloat(), res=0;
+              bool dz=false;
+              if (calcOp=='+') res=v1+v2;
+              else if (calcOp=='-') res=v1-v2;
+              else if (calcOp=='*') res=v1*v2;
+              else if (calcOp=='/') { if (v2!=0) res=v1/v2; else dz=true; }
+              if (dz) { calcError=true; }
+              else {
+                calcInput1=String(res,4);
+                while(calcInput1.endsWith("0")&&calcInput1.indexOf(".")!=-1) calcInput1.remove(calcInput1.length()-1);
+                if(calcInput1.endsWith(".")) calcInput1.remove(calcInput1.length()-1);
+                calcInput2=""; calcOp=op; calcIsOpSet=true;
+              }
+            } else { calcOp=op; calcIsOpSet=true; }
+          }
+
+        } else if (keyStr == "SCI") {
+          calcSciRow = 0; calcSciCol = 0;
+          startAnimation(SCREEN_CALCULATOR_SCI, -64);
+
+        } else if (keyStr != "") {
+          // digit or .
+          if (calcError) { calcInput1=""; calcInput2=""; calcOp=' '; calcIsOpSet=false; calcError=false; }
+          if (calcIsOpSet) {
+            if (keyStr=="." && calcInput2.indexOf(".")!=-1) {}
+            else if (calcInput2.length()<10) calcInput2 += keyStr;
+          } else {
+            if (keyStr=="." && calcInput1.indexOf(".")!=-1) {}
+            else if (calcInput1.length()<10) calcInput1 += keyStr;
+          }
+        }
+      }
+    }
+
+    else if (currentScreen == SCREEN_CALCULATOR_SCI) {
+      if (buttonJustPressed[0]) calcSciRow = (calcSciRow > 0) ? calcSciRow - 1 : 2;
+      if (buttonJustPressed[1]) calcSciRow = (calcSciRow < 2) ? calcSciRow + 1 : 0;
+      if (buttonJustPressed[2]) calcSciCol = (calcSciCol > 0) ? calcSciCol - 1 : 1;
+      if (buttonJustPressed[3]) calcSciCol = (calcSciCol < 1) ? calcSciCol + 1 : 0;
+
+      if (buttonJustPressed[4]) {
+        const char* key = sciGrid[calcSciRow][calcSciCol];
+        if (strcmp(key, "BACK") == 0) {
+          startAnimation(SCREEN_CALCULATOR, 64);
+          return;
+        }
+        
+        // Apply SCI function to active input
+        String* activeInput = calcIsOpSet ? &calcInput2 : &calcInput1;
+        float v = activeInput->toFloat();
+        bool hasVal = (activeInput->length() > 0 && !calcError);
+        String result = "";
+        bool sciError = false;
+
+        if (strcmp(sciGrid[calcSciRow][calcSciCol], "x^2") == 0) {
+          if (hasVal) result = String(v * v, 4);
+        } else if (strcmp(sciGrid[calcSciRow][calcSciCol], "sqrt") == 0) {
+          if (hasVal && v >= 0) result = String(sqrt(v), 4);
+          else sciError = true;
+        } else if (strcmp(sciGrid[calcSciRow][calcSciCol], "pi") == 0) {
+          result = "3.14159265";
+        } else if (strcmp(sciGrid[calcSciRow][calcSciCol], "x^3") == 0) {
+          if (hasVal) result = String(v * v * v, 4);
+        } else if (strcmp(sciGrid[calcSciRow][calcSciCol], "cbrt") == 0) {
+          if (hasVal) {
+            float cb = (v >= 0) ? pow(v, 1.0f/3.0f) : -pow(-v, 1.0f/3.0f);
+            result = String(cb, 4);
+          }
+        }
+
+        if (sciError) {
+          calcError = true;
+        } else if (result.length() > 0) {
+          // Trim trailing zeros
+          while (result.endsWith("0") && result.indexOf(".") != -1) result.remove(result.length()-1);
+          if (result.endsWith(".")) result.remove(result.length()-1);
+          // If pi was inserted into empty, set as calcInput1 directly
+          if (strcmp(sciGrid[calcSciRow][calcSciCol], "pi") == 0) {
+            if (!calcIsOpSet) calcInput1 = result;
+            else calcInput2 = result;
+          } else {
+            *activeInput = result;
+          }
+        }
+        startAnimation(SCREEN_CALCULATOR, 64);
+      }
     }
 
     else if (currentScreen == SCREEN_WIFI_RESULTS) {
@@ -1158,8 +1392,12 @@ void loop() {
 
         if (strcmp(key, "EN") == 0) {
           if (kbReturnScreen == SCREEN_RADIO_BLE) {
-            bleConfirmMode = 0; bleConfirmCursor = 0;
-            currentScreen = SCREEN_RADIO_BLE_CONFIRM;
+            if (kbInputBuffer == bleDeviceName) {
+              currentScreen = SCREEN_RADIO_BLE;
+            } else {
+              bleConfirmMode = 0; bleConfirmCursor = 0;
+              currentScreen = SCREEN_RADIO_BLE_CONFIRM;
+            }
           } else if (kbReturnScreen == SCREEN_AI_CHAT) {
             aiInputText = kbInputBuffer;
             if (aiInputText.length() > 128) aiInputText = aiInputText.substring(0, 128);
@@ -1235,6 +1473,17 @@ void loop() {
     updateDisplay();
   }
 
+  static unsigned long lastBleCheck = 0;
+  if (millis() - lastBleCheck > 3000) {
+    lastBleCheck = millis();
+    if (pBleServer && pBleServer->getConnectedCount() == 0) {
+      if (!NimBLEDevice::getAdvertising()->isAdvertising()) {
+        Serial.println("BLE watchdog: Restarting advertising...");
+        NimBLEDevice::getAdvertising()->start();
+      }
+    }
+  }
+
   delay(5);
 }
 void startAnimation(ScreenState next, int targetOffset) {
@@ -1248,7 +1497,6 @@ void updateDisplay() {
   display.clearDisplay();
 
   if (isAnimating) {
-
     if (animTargetY < 0) {
       drawScreen(currentScreen, animOffsetY);
       drawScreen(animNextScreen, animOffsetY + 64);
@@ -1261,6 +1509,27 @@ void updateDisplay() {
   }
 
   display.display();
+
+  // Handle Display Mirroring
+  if (bleConnected && mirroringActive) {
+    if (millis() - lastMirrorUpdate >= MIRROR_INTERVAL) {
+      uint8_t* buffer = display.getBuffer();
+      int offset = 0;
+      uint8_t chunkIdx = 0;
+      while (offset < 1024) {
+        int size = min(500, 1024 - offset);
+        uint8_t packet[501];
+        packet[0] = chunkIdx;
+        memcpy(packet + 1, buffer + offset, size);
+        pDisplayCharacteristic->setValue(packet, size + 1);
+        pDisplayCharacteristic->notify();
+        offset += size;
+        chunkIdx++;
+        vTaskDelay(pdMS_TO_TICKS(10)); // Allow NimBLE stack to process
+      }
+      lastMirrorUpdate = millis();
+    }
+  }
 }
 
 void drawScreen(ScreenState screen, int yOffset) {
@@ -1290,6 +1559,9 @@ void drawScreen(ScreenState screen, int yOffset) {
   else if (screen == SCREEN_WIFI_NTP) drawWifiNTP(yOffset);
   else if (screen == SCREEN_AI_CHAT) drawAiChat(yOffset);
   else if (screen == SCREEN_AI_THINKING) drawAiThinking(yOffset);
+  else if (screen == SCREEN_AI_WIFI_ERROR) drawAiWifiError(yOffset);
+  else if (screen == SCREEN_CALCULATOR) drawCalculator(yOffset);
+  else if (screen == SCREEN_CALCULATOR_SCI) drawCalculatorSci(yOffset);
 }
 
 void drawHeader(int yOffset, const char* appName, bool backFocused) {
@@ -1326,7 +1598,8 @@ void drawHeader(int yOffset, const char* appName, bool backFocused) {
     }
   }
 
-  if (bleConnected && (currentScreen == SCREEN_WATCHFACE || currentScreen == SCREEN_MENU)) {
+  bool headerBleConnected = bleConnected || (pBleServer && pBleServer->getConnectedCount() > 0);
+  if (headerBleConnected && (currentScreen == SCREEN_WATCHFACE || currentScreen == SCREEN_MENU)) {
     display.drawFastVLine(currentIconX + 3, iconY + 0, 9, SSD1306_WHITE);
     display.drawLine(currentIconX + 1, iconY + 2, currentIconX + 5, iconY + 6, SSD1306_WHITE);
     display.drawLine(currentIconX + 1, iconY + 6, currentIconX + 5, iconY + 2, SSD1306_WHITE);
@@ -1555,6 +1828,121 @@ void buttonReadTask(void *pvParameters) {
   }
 }
 
+void drawCalculator(int yOffset) {
+  // Build display string
+  String disp;
+  if (calcError) {
+    disp = "Err: Div/0";
+  } else {
+    disp = (calcInput1.length() > 0) ? calcInput1 : "0";
+    if (calcIsOpSet) {
+      disp += ' '; disp += calcOp;
+      if (calcInput2.length() > 0) { disp += ' '; disp += calcInput2; }
+    }
+  }
+  // Clamp display to 18 chars (18*6=108px, leaving room)
+  if ((int)disp.length() > 18) disp = disp.substring(disp.length() - 18);
+
+  // --- Display bar: y=0..12 (13px tall) ---
+  // Right-align the expression text. Each char = 6px at textSize 1.
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  int dispX = 128 - (int)disp.length() * 6 - 1;
+  if (dispX < 0) dispX = 0;
+  display.setCursor(dispX, 3 + yOffset);
+  display.print(disp);
+
+  // Separator line
+  display.drawFastHLine(0, 13 + yOffset, 128, SSD1306_WHITE);
+
+  // --- Button grid: y=14..63 = 50px for 5 rows ---
+  // CELL_W=32px (4 cols * 32 = 128), CELL_H=10px (5 rows * 10 = 50, fits in 50)
+  const int GY   = 14 + yOffset;
+  const int CW   = 32;
+  const int CH   = 10;
+
+  for (int r = 0; r < 5; r++) {
+    for (int c = 0; c < 4; c++) {
+      const char* lbl = calcGrid[r][c];
+      if (lbl[0] == '\0') continue; // skip empty cell
+      int cx = c * CW;
+      int cy = GY + r * CH;
+      bool sel = (r == calcCursorRow && c == calcCursorCol);
+
+      if (sel) {
+        display.fillRect(cx, cy, CW, CH, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      } else {
+        display.drawRect(cx, cy, CW, CH, SSD1306_WHITE);
+        display.setTextColor(SSD1306_WHITE);
+        // Emphasize operator column (col 3) with an extra pixel width
+        if (c == 3) display.drawFastVLine(cx + 1, cy, CH, SSD1306_WHITE);
+      }
+      // Center text: 6px per char at size 1
+      int tw = strlen(lbl) * 6;
+      int tx = cx + (CW - tw) / 2;
+      int ty = cy + (CH - 7) / 2; // proper center padding (10px cell, 7px char = 1.5px top pad)
+      display.setCursor(tx, ty);
+      display.print(lbl);
+    }
+  }
+  display.setTextColor(SSD1306_WHITE);
+}
+
+void drawCalculatorSci(int yOffset) {
+  // --- Display bar: show current active value (top 15px) ---
+  String activeVal = calcIsOpSet ? calcInput2 : calcInput1;
+  if (activeVal.length() == 0) activeVal = "0";
+  if (calcError) activeVal = "Error";
+
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  // Left: "SCI" label
+  display.setCursor(1, 3 + yOffset);
+  display.print("SCI");
+
+  // Right: active value right-aligned
+  int valX = 128 - (int)activeVal.length() * 6 - 1;
+  if (valX < 25) valX = 25;
+  display.setCursor(valX, 3 + yOffset);
+  display.print(activeVal);
+
+  // Separator
+  display.drawFastHLine(0, 13 + yOffset, 128, SSD1306_WHITE);
+
+  // --- SCI grid: 3 rows x 2 cols ---
+  // CELL_W=64px (2*64=128), CELL_H=16px (3*16=48, fits 14..63 = 50px)
+  const int GY = 15 + yOffset;
+  const int CW = 64;
+  const int CH = 16;
+
+  for (int r = 0; r < 3; r++) {
+    for (int c = 0; c < 2; c++) {
+      int cx = c * CW;
+      int cy = GY + r * CH;
+      bool sel = (r == calcSciRow && c == calcSciCol);
+      const char* lbl = sciGrid[r][c];
+      if (lbl[0] == '\0') continue;
+
+      if (sel) {
+        display.fillRect(cx, cy, CW, CH, SSD1306_WHITE);
+        display.setTextColor(SSD1306_BLACK);
+      } else {
+        display.drawRect(cx, cy, CW, CH, SSD1306_WHITE);
+        display.setTextColor(SSD1306_WHITE);
+      }
+      // Center label in cell
+      int tw = strlen(lbl) * 6;
+      int tx = cx + (CW - tw) / 2;
+      int ty = cy + (CH - 7) / 2; // 7px = char height at size 1
+      display.setCursor(tx, ty);
+      display.print(lbl);
+    }
+  }
+  display.setTextColor(SSD1306_WHITE);
+}
+
 void drawCenteredText(Adafruit_SSD1306 &d, const String &text, int16_t y, uint8_t size) {
   int16_t x1, y1; uint16_t w, h;
   d.setTextSize(size);
@@ -1579,15 +1967,56 @@ void drawBoxedCenteredText(Adafruit_SSD1306 &d, const char* text, int x, int y, 
   d.setTextColor(SSD1306_WHITE);
 }
 
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
+class MyServerCallbacks: public NimBLEServerCallbacks {
+public:
+
+    void onConnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
       bleConnected = true;
-      bleRemoteDeviceName = "Connected";
+      bleRemoteAddress = NimBLEAddress(desc->peer_ota_addr).toString().c_str();
+      Serial.print("Device connected: ");
+      Serial.println(bleRemoteAddress);
+      
+      if (pPhoneNameCharacteristic) {
+        pPhoneNameCharacteristic->setValue("None");
+        bleRemoteDeviceName = "None";
+      }
+      
+      // Connection parameters update removed to let the central (phone) decide
+      // and prevent immediate disconnections due to protocol collisions.
     };
-    void onDisconnect(BLEServer* pServer) {
+
+    void onDisconnect(NimBLEServer* pServer) {
       bleConnected = false;
       bleRemoteDeviceName = "None";
-      BLEDevice::startAdvertising();
+      bleRemoteAddress = "";
+      Serial.println("Device disconnected. Restarting advertising...");
+      
+      // Start advertising again - this is the key for reconnection
+      if(!pServer->getAdvertising()->isAdvertising()) {
+        pServer->getAdvertising()->start();
+      }
+    }
+
+    void onDisconnect(NimBLEServer* pServer, ble_gap_conn_desc* desc) {
+      bleConnected = false;
+      bleRemoteDeviceName = "None";
+      bleRemoteAddress = "";
+      Serial.println("Device disconnected (desc). Restarting advertising...");
+      
+      if(!pServer->getAdvertising()->isAdvertising()) {
+        pServer->getAdvertising()->start();
+      }
+    }
+};
+
+class MirrorControlCallbacks: public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pCharacteristic) {
+        std::string value = pCharacteristic->getValue();
+        if (value.length() > 0) {
+            mirroringActive = (value[0] == 1);
+            Serial.print("Mirroring state: ");
+            Serial.println(mirroringActive ? "ON" : "OFF");
+        }
     }
 };
 
@@ -1597,25 +2026,63 @@ void initBLE() {
   bleSettingAccess = prefs.getBool("access", false);
   prefs.end();
 
-  BLEDevice::init(bleDeviceName.c_str());
-  pBleServer = BLEDevice::createServer();
+  NimBLEDevice::init(bleDeviceName.c_str());
+  pBleServer = NimBLEDevice::createServer();
   pBleServer->setCallbacks(new MyServerCallbacks());
 
-  BLEService *pService = pBleServer->createService("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
+  NimBLEService *pService = pBleServer->createService("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
   pBleNameCharacteristic = pService->createCharacteristic(
                              "beb5483e-36e1-4688-b7f5-ea07361b26a8",
-                             BLECharacteristic::PROPERTY_READ |
-                             BLECharacteristic::PROPERTY_WRITE
+                             NIMBLE_PROPERTY::READ |
+                             NIMBLE_PROPERTY::WRITE
                            );
   pBleNameCharacteristic->setValue(bleDeviceName.c_str());
+
+  pPhoneNameCharacteristic = pService->createCharacteristic(
+                               "cba5483e-36e1-4688-b7f5-ea07361b26a9",
+                               NIMBLE_PROPERTY::READ |
+                               NIMBLE_PROPERTY::WRITE
+                             );
+  pPhoneNameCharacteristic->setCallbacks(new PhoneNameCallbacks());
+  pPhoneNameCharacteristic->setValue("None");
+
+  pMirrorControlCharacteristic = pService->createCharacteristic(
+                                   "cba5483e-36e1-4688-b7f5-ea07361b26aa",
+                                   NIMBLE_PROPERTY::WRITE
+                                 );
+  pMirrorControlCharacteristic->setCallbacks(new MirrorControlCallbacks());
+
+  pDisplayCharacteristic = pService->createCharacteristic(
+                             "cba5483e-36e1-4688-b7f5-ea07361b26ab",
+                             NIMBLE_PROPERTY::READ |
+                             NIMBLE_PROPERTY::NOTIFY
+                           );
+
   pService->start();
 
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
-  pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);
-  pAdvertising->setMinPreferred(0x12);
-  BLEDevice::startAdvertising();
+
+  // Enable scan response so the full name fits without overflowing the 31-byte
+  // primary advertisement payload (flags + UUID + short name must stay <= 31B).
+  pAdvertising->enableScanResponse(true);
+
+  // Primary advert: flags only + a short name (<=8 chars) to stay well within
+  // the 31-byte limit. Overfilling this causes malformed packets on many phones
+  // which immediately triggers a disconnect right after connection.
+  NimBLEAdvertisementData advData;
+  advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+  String shortName = bleDeviceName.substring(0, min((int)bleDeviceName.length(), 8));
+  advData.setShortName(shortName.c_str());
+  pAdvertising->setAdvertisementData(advData);
+
+  // Scan response: full device name (up to 29 chars fits here safely)
+  NimBLEAdvertisementData scanData;
+  scanData.setName(bleDeviceName.c_str());
+  pAdvertising->setScanResponseData(scanData);
+
+  // Start advertising
+  pAdvertising->start();
 }
 
 void saveBleSettings() {
@@ -1691,77 +2158,41 @@ void syncTimeWithNTP() {
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 }
 
-void internetPinger1(void *p) {
+void connectivityTask(void *p) {
+  const char* urls[] = {
+    "http://www.gstatic.com/generate_204",
+    "http://clients3.google.com/generate_204",
+    "http://cp.cloudflare.com/generate_204",
+    "http://edge-http.microsoft.com/captiveportal/generate_204",
+    "http://connect.rom.miui.com/generate_204"
+  };
+  int urlIndex = 0;
   for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
+    if (!displayOn || aiThinking) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
+    
+    bool ok = false;
     if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
-      h.begin("http://www.gstatic.com/generate_204");
-      pingerStatus[0] = (h.GET() == 204); h.end();
-    } else pingerStatus[0] = false;
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
-}
-void internetPinger2(void *p) {
-  for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
-      h.begin("http://clients3.google.com/generate_204");
-      pingerStatus[1] = (h.GET() == 204); h.end();
-    } else pingerStatus[1] = false;
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
-}
-void internetPinger3(void *p) {
-  for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
-      h.begin("http://cp.cloudflare.com/generate_204");
-      pingerStatus[2] = (h.GET() == 204); h.end();
-    } else pingerStatus[2] = false;
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
-}
-void internetPinger4(void *p) {
-  for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
-      h.begin("http://edge-http.microsoft.com/captiveportal/generate_204");
-      pingerStatus[3] = (h.GET() == 204); h.end();
-    } else pingerStatus[3] = false;
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
-}
-void internetPinger5(void *p) {
-  for (;;) {
-    if (!displayOn) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient h; h.setConnectTimeout(1200); h.setTimeout(1800);
-      h.begin("http://connect.rom.miui.com/generate_204");
-      pingerStatus[4] = (h.GET() == 204); h.end();
-    } else pingerStatus[4] = false;
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
-}
-void connectivityAggregator(void *p) {
-  for (;;) {
+      HTTPClient h; 
+      h.setConnectTimeout(1200); 
+      h.setTimeout(1800);
+      h.begin(urls[urlIndex]);
+      ok = (h.GET() == 204); 
+      h.end();
+    }
+    
+    pingerStatus[urlIndex] = ok;
+    urlIndex = (urlIndex + 1) % 5;
+    
     bool prev = internetOK;
     internetOK = pingerStatus[0] || pingerStatus[1] || pingerStatus[2] || pingerStatus[3] || pingerStatus[4];
     if (prev != internetOK) statusChanged = true;
-    vTaskDelay(pdMS_TO_TICKS(50));
+    
+    vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
 
 void startWifiPingers() {
-  xTaskCreate(internetPinger1, "P1", 3072, NULL, 1, NULL);
-  xTaskCreate(internetPinger2, "P2", 3072, NULL, 1, NULL);
-  xTaskCreate(internetPinger3, "P3", 3072, NULL, 1, NULL);
-  xTaskCreate(internetPinger4, "P4", 3072, NULL, 1, NULL);
-  xTaskCreate(internetPinger5, "P5", 3072, NULL, 1, NULL);
-  xTaskCreate(connectivityAggregator, "NetAgg", 2048, NULL, 2, NULL);
+  xTaskCreate(connectivityTask, "NetPing", 4096, NULL, 1, NULL);
 }
 
 void drawRadioHome(int yOffset) {
@@ -1931,47 +2362,59 @@ void drawRadioBleHome(int yOffset) {
   drawHeader(yOffset, "Bluetooth", (bleHomeCursor == -1));
   display.setTextColor(SSD1306_WHITE);
 
-  if (!bleConnected) {
-    drawCenteredText(display, "Bluetooth ON", 18 + yOffset, 1);
-    drawCenteredText(display, "Device not connected", 30 + yOffset, 1);
+  bool isConnected = bleConnected;
+  if (pBleServer && pBleServer->getConnectedCount() > 0) isConnected = true;
 
-    int okY = 48 + yOffset;
-    bool okSelected = (bleHomeCursor == 0);
-    if (okSelected) {
-      display.fillRect(46, okY - 1, 36, 11, SSD1306_WHITE);
+  if (!isConnected) {
+    
+    // Center text layout
+    drawCenteredText(display, "READY TO PAIR", 26 + yOffset, 1);
+    
+    String dn = bleDeviceName;
+    if (dn.length() > 18) dn = dn.substring(0, 17) + "~";
+    drawCenteredText(display, dn, 38 + yOffset, 1);
+
+    if (bleHomeCursor == 0) {
+      display.fillRect(46, 64 - 11 + yOffset, 36, 11, SSD1306_WHITE);
       display.setTextColor(SSD1306_BLACK);
     } else {
-      display.drawRect(46, okY - 1, 36, 11, SSD1306_WHITE);
+      display.drawRect(46, 64 - 11 + yOffset, 36, 11, SSD1306_WHITE);
       display.setTextColor(SSD1306_WHITE);
     }
-    drawCenteredText(display, "OK", okY + 1, 1);
+    drawCenteredText(display, "BACK", 64 - 10 + yOffset, 1);
     display.setTextColor(SSD1306_WHITE);
   } else {
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
 
-    int startY = 16 + yOffset;
-    display.setCursor(4, startY);
+    display.setCursor(4, 15 + yOffset);
+    display.print("Name: ");
+    String dn = bleDeviceName;
+    if (dn.length() > 14) dn = dn.substring(0, 13) + "..";
+    display.print(dn);
+
+    display.setCursor(4, 25 + yOffset);
     display.print("Device: ");
-    String remote = bleRemoteDeviceName;
-    if (remote.length() > 9) remote = remote.substring(0, 8) + "..";
+    String remote = (bleRemoteDeviceName != "None") ? bleRemoteDeviceName : bleRemoteAddress;
+    if (remote.length() > 12) remote = remote.substring(0, 11) + "..";
     display.print(remote);
 
+    // Options menu
+    int optY = 38 + yOffset;
+    const char* opts[] = {"Rename Watch", "Toggle Access"};
     for (int i = 0; i < 2; i++) {
-      int rowY = 26 + (i * 12) + yOffset;
-      if (bleHomeCursor == i) {
-        display.fillRect(0, rowY - 1, 128, 11, SSD1306_WHITE);
-        display.setTextColor(SSD1306_BLACK);
-      }
-      display.setCursor(4, rowY);
-      if (i == 0) {
-        display.print("Name: ");
-        String dn = bleDeviceName;
-        if (dn.length() > 10) dn = dn.substring(0, 9) + "..";
-        display.print(dn);
-      } else if (i == 1) {
-        display.print("Setting access: "); display.print(bleSettingAccess ? "YES" : "NO");
-      }
-      display.setTextColor(SSD1306_WHITE);
+        int y = optY + (i * 12);
+        bool sel = (bleHomeCursor == i);
+        if (sel) {
+            display.fillRect(0, y-2, 128, 11, SSD1306_WHITE);
+            display.setTextColor(SSD1306_BLACK);
+        } else {
+            display.setTextColor(SSD1306_WHITE);
+        }
+        display.setCursor(4, y);
+        display.print(opts[i]);
     }
+    display.setTextColor(SSD1306_WHITE);
   }
 }
 
@@ -1979,16 +2422,25 @@ void drawBleConfirm(int yOffset) {
   drawHeader(yOffset, "Bluetooth", (bleConfirmCursor == -1));
   display.setTextColor(SSD1306_WHITE);
 
+  // Decorative icon for confirmation
+  int iconX = 58;
+  int iconY = 16 + yOffset;
+  display.drawFastVLine(iconX + 3, iconY, 5, SSD1306_WHITE);
+  display.drawLine(iconX + 1, iconY + 1, iconX + 5, iconY + 4, SSD1306_WHITE);
+  display.drawLine(iconX + 1, iconY + 4, iconX + 5, iconY + 1, SSD1306_WHITE);
+  display.drawLine(iconX + 3, iconY, iconX + 5, iconY + 1, SSD1306_WHITE);
+  display.drawLine(iconX + 3, iconY + 5, iconX + 5, iconY + 4, SSD1306_WHITE);
+
   const char* msg = "";
   if (bleConfirmMode == 0) msg = "Change Name?";
   else if (bleConfirmMode == 1) msg = "Disconnect?";
   else if (bleConfirmMode == 2) msg = "Forget Device?";
   else if (bleConfirmMode == 3) msg = bleSettingAccess ? "Turn OFF access?" : "Turn ON access?";
 
-  drawCenteredText(display, msg, 22 + yOffset, 1);
+  drawCenteredText(display, msg, 28 + yOffset, 1);
 
-  drawBoxedCenteredText(display, "YES", 10, 44 + yOffset, 46, 13, (bleConfirmCursor == 0));
-  drawBoxedCenteredText(display, "NO",  72, 44 + yOffset, 46, 13, (bleConfirmCursor == 1));
+  drawBoxedCenteredText(display, "YES", 10, 48 + yOffset, 46, 13, (bleConfirmCursor == 0));
+  drawBoxedCenteredText(display, "NO",  72, 48 + yOffset, 46, 13, (bleConfirmCursor == 1));
 }
 
 void drawWifiHome(int yOffset) {
@@ -2146,7 +2598,7 @@ void wifiBackgroundTask(void *pvParameters) {
 
     vTaskDelay(pdMS_TO_TICKS(10000));
 
-    if ((wifiAutoOn || wifiEnabled) && !ecoModeActive) {
+    if (wifiAutoOn && !ecoModeActive) {
 
       if (WiFi.status() == WL_CONNECTED || wifiConnecting || WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
         continue;
@@ -2164,7 +2616,22 @@ void wifiBackgroundTask(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(100));
       }
 
-      int n = WiFi.scanNetworks();
+      WiFi.scanNetworks(true); // Run scan async
+
+      unsigned long scanWaitStart = millis();
+      while (WiFi.scanComplete() == WIFI_SCAN_RUNNING && millis() - scanWaitStart < 10000) {
+          vTaskDelay(pdMS_TO_TICKS(100)); // Poll without blocking the radio completely
+      }
+
+      int n = WiFi.scanComplete();
+
+      // Ensure BLE advertising is alive after scan operations
+      if (pBleServer && pBleServer->getConnectedCount() == 0) {
+        NimBLEDevice::getAdvertising()->stop();
+        vTaskDelay(pdMS_TO_TICKS(50));
+        NimBLEDevice::getAdvertising()->start();
+      }
+
       if (n > 0) {
         int bestIdx = -1;
         bool lastFound = false;
@@ -2204,6 +2671,13 @@ void wifiBackgroundTask(void *pvParameters) {
             prefs.putString("lastSSID", lastConnectedSSID);
             prefs.end();
             syncTimeWithNTP();
+
+            // Restart BLE advertising after WiFi connects
+            if (pBleServer && pBleServer->getConnectedCount() == 0) {
+              NimBLEDevice::getAdvertising()->stop();
+              vTaskDelay(pdMS_TO_TICKS(50));
+              NimBLEDevice::getAdvertising()->start();
+            }
           }
         }
       }
@@ -2374,12 +2848,40 @@ void drawAiThinking(int yOffset) {
   drawCenteredText(display, dotStr, 38 + yOffset, 1);
 }
 
+void drawAiWifiError(int yOffset) {
+  display.drawFastHLine(0, 12 + yOffset, 128, SSD1306_WHITE);
+  display.setTextSize(1);
+
+  if (aiWifiErrorCursor == 0) {
+    display.fillRect(0, yOffset, 24, 12, SSD1306_WHITE);
+    display.setTextColor(SSD1306_BLACK);
+  } else {
+    display.setTextColor(SSD1306_WHITE);
+  }
+  display.setCursor(2, 2 + yOffset);
+  display.print("<--");
+
+  display.setTextColor(SSD1306_WHITE);
+  drawCenteredText(display, "WiFi", 2 + yOffset, 1);
+
+  const char* msg = "";
+  if (aiWifiErrorType == 0) msg = "WiFi Turned Off";
+  else if (aiWifiErrorType == 1) msg = "WiFi not connected";
+  else if (aiWifiErrorType == 2) msg = "No Internet";
+
+  drawCenteredText(display, msg, 30 + yOffset, 1);
+
+  drawBoxedCenteredText(display, "OK", 48, 48 + yOffset, 32, 13, (aiWifiErrorCursor == 1));
+}
+
 void aiSendTask(void* param) {
 
   int contextCount = min(6, aiMsgCount);
   int startIdx = aiMsgCount - contextCount;
 
-  String messages = "[{\"role\":\"system\",\"content\":\"You are a helpful AI assistant on a smartwatch. Keep responses very short (under 100 chars) since the display is tiny (128x64 pixels). Be concise and direct.\"}";
+  String payload;
+  payload.reserve(2048); // Pre-allocate memory to reduce fragmentation
+  payload = "{\"model\":\"llama-3.3-70b-versatile\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a helpful AI assistant on a smartwatch. Keep responses very short (under 100 chars) since the display is tiny (128x64 pixels). Be concise and direct.\"}";
 
   for (int i = startIdx; i < aiMsgCount; i++) {
     String msg = aiGetMessage(i);
@@ -2389,28 +2891,42 @@ void aiSendTask(void* param) {
     content.replace("\\", "\\\\");
     content.replace("\"", "\\\"");
     content.replace("\n", " ");
-    messages += ",{\"role\":\"" + role + "\",\"content\":\"" + content + "\"}";
+    payload += ",{\"role\":\"" + role + "\",\"content\":\"" + content + "\"}";
   }
-  messages += "]";
-
-  String payload = "{\"model\":\"llama-3.3-70b-versatile\",\"messages\":" + messages + ",\"max_tokens\":150}";
+  payload += "],\"max_tokens\":150}";
 
   vTaskDelay(pdMS_TO_TICKS(500));
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  WiFiClientSecure *client = new WiFiClientSecure();
+  if (!client) {
+    aiResponse = "Memory Error";
+    aiResponseReady = true;
+    vTaskDelete(NULL);
+    return;
+  }
+  client->setInsecure();
+  client->setHandshakeTimeout(10000); // 10s handshake timeout
 
-  HTTPClient http;
-  http.setConnectTimeout(5000);
-  http.setTimeout(7000);
-  http.begin(client, "https://api.groq.com/openai/v1/chat/completions");
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("User-Agent", "ESP32-Smartwatch/1.0");
-  http.addHeader("Authorization", String("Bearer ") + GROQ_API_KEY);
+  HTTPClient *http = new HTTPClient();
+  if (!http) {
+    delete client;
+    aiResponse = "Memory Error";
+    aiResponseReady = true;
+    vTaskDelete(NULL);
+    return;
+  }
+  
+  http->setConnectTimeout(10000);
+  http->setTimeout(15000);
+  http->setReuse(false); // Ensure a fresh connection to avoid socket issues
+  http->begin(*client, "https://api.groq.com/openai/v1/chat/completions");
+  http->addHeader("Content-Type", "application/json");
+  http->addHeader("User-Agent", "ESP32-Smartwatch/1.0");
+  http->addHeader("Authorization", String("Bearer ") + GROQ_API_KEY);
 
-  int code = http.POST(payload);
+  int code = http->POST(payload);
   if (code == 200) {
-    String response = http.getString();
+    String response = http->getString();
 
     int choicesIdx = response.indexOf("\"choices\"");
     if (choicesIdx != -1) {
@@ -2438,11 +2954,12 @@ void aiSendTask(void* param) {
     }
     if (!aiResponseReady) aiResponseError = true;
   } else {
-
-    aiResponse = "Error: " + String(code);
+    aiResponse = "HTTP " + String(code);
     aiResponseReady = true;
   }
-  http.end();
+  http->end();
+  delete http;
+  delete client;
   vTaskDelete(NULL);
 }
 
