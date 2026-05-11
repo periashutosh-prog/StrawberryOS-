@@ -104,4 +104,4 @@ Refer to the `LICENSE` file for complete details.
 ## Author
 
 **Ashutosh**
-A Student and an ambitious Maker
+A student, gamer and an ambitious maker.
